@@ -20,7 +20,6 @@
     overscroll-behavior: none;
   }
   body {
-    padding-top: env(safe-area-inset-top);
     padding-right: env(safe-area-inset-right);
     padding-bottom: env(safe-area-inset-bottom);
     padding-left: env(safe-area-inset-left);
@@ -28,7 +27,7 @@
   }
   header {
     text-align: center;
-    padding: 14px 12px 10px;
+    padding: calc(14px + env(safe-area-inset-top)) 12px 10px;
     position: sticky;
     top: 0;
     background: rgba(0,0,0,0.88);
@@ -252,10 +251,12 @@ function pickIcon(cb, rb, isDay) {
 function windIcon(fromDeg, mph) {
   const to = (fromDeg + 180) % 360;
   const display = ((to - MANHATTAN_OFFSET) + 360) % 360;
+  // 8–15 mph: orange · >15 mph: red · else: default
+  const numFill = mph > 15 ? '#ef4444' : (mph >= 8 ? '#fb923c' : '#e6edf7');
   return `
     <svg viewBox="0 0 64 64">
       <circle cx="32" cy="32" r="19" fill="none" stroke="#cbd5e1" stroke-width="2"/>
-      <text x="32" y="37" text-anchor="middle" font-size="15" font-weight="700" fill="#e6edf7">${mph}</text>
+      <text x="32" y="37" text-anchor="middle" font-size="15" font-weight="700" fill="${numFill}">${mph}</text>
       <g transform="rotate(${display.toFixed(1)} 32 32)">
         <polygon points="32,4 27,14 37,14" fill="#cbd5e1"/>
       </g>
