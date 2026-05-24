@@ -1,0 +1,378 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<meta name="theme-color" content="#000000">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="HRRR 10065">
+<title>HRRR · 10065</title>
+<style>
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body {
+    margin: 0;
+    padding: 0;
+    background: #000;
+    color: #e6edf7;
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    overscroll-behavior: none;
+  }
+  body {
+    padding-top: env(safe-area-inset-top);
+    padding-right: env(safe-area-inset-right);
+    padding-bottom: env(safe-area-inset-bottom);
+    padding-left: env(safe-area-inset-left);
+    min-height: 100vh;
+  }
+  header {
+    text-align: center;
+    padding: 14px 12px 10px;
+    position: sticky;
+    top: 0;
+    background: rgba(0,0,0,0.88);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+    z-index: 10;
+    border-bottom: 1px solid rgba(255,255,255,0.06);
+  }
+  .loc {
+    font-size: 15px;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+  }
+  .upd {
+    font-size: 11px;
+    color: #8aa0bf;
+    margin-top: 3px;
+    letter-spacing: 0.04em;
+  }
+  main {
+    padding: 0 6px 24px;
+  }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    table-layout: fixed;
+  }
+  th, td {
+    padding: 10px 2px;
+    text-align: center;
+    border-bottom: 1px solid rgba(255,255,255,0.06);
+    vertical-align: middle;
+  }
+  th {
+    color: #8aa0bf;
+    font-size: 10.5px;
+    font-weight: 500;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    padding: 14px 2px 8px;
+    background: #000;
+  }
+  col.c-hour { width: 22%; }
+  col.c-temp { width: 16%; }
+  col.c-sky  { width: 18%; }
+  col.c-rain { width: 14%; }
+  col.c-wind { width: 30%; }
+  .cell-hour { font-size: 13px; line-height: 1.1; }
+  .cell-temp { font-size: 24px; font-weight: 700; line-height: 1; }
+  .cell-sky  { padding: 6px 2px; }
+  .cell-sky svg { width: 40px; height: 40px; display: inline-block; vertical-align: middle; overflow: visible; }
+  .cell-rain { font-size: 14px; color: #38bdf8; font-variant-numeric: tabular-nums; }
+  .cell-rain.dry { color: #475569; }
+  .cell-wind { padding: 4px 2px; }
+  .cell-wind svg { width: 48px; height: 48px; display: inline-block; vertical-align: middle; }
+
+  tr.now { background: rgba(96,165,250,0.07); }
+  tr.now .cell-hour { color: #60a5fa; font-weight: 700; }
+
+  tr.day-divider td {
+    padding: 12px 12px 10px;
+    text-align: center;
+    background: rgba(255,255,255,0.045);
+    color: #cbd5e1;
+    font-size: 11.5px;
+    font-weight: 600;
+    letter-spacing: 0.14em;
+    border-top: 1px solid rgba(255,255,255,0.1);
+    border-bottom: 1px solid rgba(255,255,255,0.1);
+  }
+
+  .status {
+    text-align: center;
+    color: #8aa0bf;
+    padding: 64px 16px;
+    font-size: 14px;
+  }
+  .status.err { color: #f87171; }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="loc">HRRR · 10065 Upper East Side</div>
+  <div class="upd" id="updated">Loading…</div>
+</header>
+
+<main>
+  <table id="table" style="display:none">
+    <colgroup>
+      <col class="c-hour"><col class="c-temp"><col class="c-sky"><col class="c-rain"><col class="c-wind">
+    </colgroup>
+    <thead>
+      <tr><th>Hour</th><th>°C</th><th>Sky</th><th>mm</th><th>Wind</th></tr>
+    </thead>
+    <tbody id="rows"></tbody>
+  </table>
+  <div class="status" id="status">Loading HRRR forecast…</div>
+</main>
+
+<script>
+/* ===================== Config ===================== */
+const COORDS = { lat: 40.7644, lon: -73.9594 };    // zip 10065 (UES)
+const MANHATTAN_OFFSET = 29;                        // degrees E of true N
+const REFRESH_MS = 15 * 60 * 1000;                  // 15 min
+const API_URL =
+  'https://api.open-meteo.com/v1/forecast' +
+  `?latitude=${COORDS.lat}&longitude=${COORDS.lon}` +
+  '&models=gfs_hrrr' +
+  '&hourly=temperature_2m,cloud_cover,precipitation,wind_speed_10m,wind_direction_10m,is_day' +
+  '&temperature_unit=celsius&wind_speed_unit=mph&precipitation_unit=mm' +
+  '&timezone=America/New_York&forecast_hours=48';
+
+/* ===================== Cloud palette ===================== */
+/* Significantly different greys: partly is very light, overcast is very dark */
+const CLOUD_LIGHT    = '#cbd5e1';   // partly / few clouds
+const CLOUD_MEDIUM   = '#64748b';   // mostly cloudy
+const CLOUD_DARK     = '#1f2937';   // overcast (much darker)
+
+/* ===================== Icon primitives ===================== */
+const SUN = `
+  <g stroke="#fbbf24" stroke-width="3" stroke-linecap="round" fill="none">
+    <line x1="32" y1="4"  x2="32" y2="12"/>
+    <line x1="32" y1="52" x2="32" y2="60"/>
+    <line x1="4"  y1="32" x2="12" y2="32"/>
+    <line x1="52" y1="32" x2="60" y2="32"/>
+    <line x1="12" y1="12" x2="18" y2="18"/>
+    <line x1="46" y1="46" x2="52" y2="52"/>
+    <line x1="52" y1="12" x2="46" y2="18"/>
+    <line x1="18" y1="46" x2="12" y2="52"/>
+  </g>
+  <circle cx="32" cy="32" r="11" fill="#fbbf24"/>`;
+
+const MOON = `<path d="M44 14 a20 20 0 1 0 0 36 a16 16 0 1 1 0 -36 z" fill="#e2e8f0"/>`;
+
+function cloud({cx=32, cy=36, s=1, fill=CLOUD_LIGHT} = {}) {
+  const r1 = 9*s, r2 = 12*s, r3 = 10*s, r4 = 8*s;
+  return `<g fill="${fill}">
+    <circle cx="${cx - 12*s}" cy="${cy + 2*s}" r="${r1}"/>
+    <circle cx="${cx}"        cy="${cy - 6*s}" r="${r2}"/>
+    <circle cx="${cx + 12*s}" cy="${cy + 1*s}" r="${r3}"/>
+    <circle cx="${cx + 1*s}"  cy="${cy + 6*s}" r="${r4}"/>
+    <rect x="${cx - 18*s}" y="${cy}" width="${36*s}" height="${10*s}" rx="${4*s}"/>
+  </g>`;
+}
+
+function rain({count=3, baseY=46} = {}) {
+  const xs = [];
+  const step = 32 / (count + 1);
+  for (let i=1; i<=count; i++) xs.push(16 + step*i);
+  return `<g stroke="#38bdf8" stroke-width="2.4" stroke-linecap="round">
+    ${xs.map((x,i)=>{
+      const y1 = baseY + (i%2 ? 0 : 3);
+      const y2 = y1 + 8;
+      return `<line x1="${x}" y1="${y1}" x2="${x-2}" y2="${y2}"/>`;
+    }).join('')}
+  </g>`;
+}
+
+const wrap = (inner) => `<svg viewBox="0 0 64 64">${inner}</svg>`;
+
+/* ===================== Icon catalog ===================== */
+const ICONS = {
+  'clear-day':         wrap(SUN),
+  'clear-night':       wrap(MOON),
+  'few-day':           wrap(`<g transform="translate(-6,-6) scale(0.75)">${SUN}</g>${cloud({cx:40, cy:42, s:0.7})}`),
+  'few-night':         wrap(`<g transform="translate(-8,-6) scale(0.75)">${MOON}</g>${cloud({cx:40, cy:42, s:0.7})}`),
+  'partly-day':        wrap(`<g transform="translate(-4,-8) scale(0.7)">${SUN}</g>${cloud({cx:36, cy:40, s:0.95})}`),
+  'partly-night':      wrap(`<g transform="translate(-4,-8) scale(0.7)">${MOON}</g>${cloud({cx:36, cy:40, s:0.95})}`),
+  'mostly':            wrap(cloud({cx:32, cy:34, s:1.15, fill:CLOUD_MEDIUM})),
+  'overcast':          wrap(cloud({cx:32, cy:32, s:1.25, fill:CLOUD_DARK})),
+  'partly-rain-day':   wrap(`<g transform="translate(-4,-10) scale(0.65)">${SUN}</g>${cloud({cx:36, cy:34, s:0.9})}${rain({count:2, baseY:48})}`),
+  'partly-rain-night': wrap(`<g transform="translate(-4,-10) scale(0.65)">${MOON}</g>${cloud({cx:36, cy:34, s:0.9})}${rain({count:2, baseY:48})}`),
+  'mostly-light':      wrap(`${cloud({cx:32, cy:28, s:1.05, fill:CLOUD_MEDIUM})}${rain({count:3, baseY:46})}`),
+  'mostly-mod':        wrap(`${cloud({cx:32, cy:28, s:1.05, fill:CLOUD_MEDIUM})}${rain({count:5, baseY:44})}`),
+  'mostly-heavy':      wrap(`${cloud({cx:32, cy:28, s:1.05, fill:CLOUD_MEDIUM})}${rain({count:7, baseY:42})}`),
+  'overcast-light':    wrap(`${cloud({cx:32, cy:26, s:1.15, fill:CLOUD_DARK})}${rain({count:3, baseY:46})}`),
+  'overcast-mod':      wrap(`${cloud({cx:32, cy:26, s:1.15, fill:CLOUD_DARK})}${rain({count:5, baseY:44})}`),
+  'overcast-heavy':    wrap(`${cloud({cx:32, cy:26, s:1.15, fill:CLOUD_DARK})}${rain({count:7, baseY:42})}`),
+};
+
+/* ===================== Classifiers ===================== */
+function cloudBand(pct) {
+  if (pct < 12) return 'clear';
+  if (pct < 37) return 'few';
+  if (pct < 62) return 'partly';
+  if (pct < 87) return 'mostly';
+  return 'overcast';
+}
+function rainBand(mm) {
+  if (mm < 0.1) return 'dry';
+  if (mm < 2.5) return 'light';
+  if (mm < 7.6) return 'moderate';
+  return 'heavy';
+}
+function pickIcon(cb, rb, isDay) {
+  if (rb === 'dry') {
+    if (cb === 'clear')    return isDay ? 'clear-day'   : 'clear-night';
+    if (cb === 'few')      return isDay ? 'few-day'     : 'few-night';
+    if (cb === 'partly')   return isDay ? 'partly-day'  : 'partly-night';
+    if (cb === 'mostly')   return 'mostly';
+    return 'overcast';
+  }
+  // wet
+  if (cb === 'clear' || cb === 'few' || cb === 'partly') {
+    if (rb === 'light')    return isDay ? 'partly-rain-day' : 'partly-rain-night';
+    if (rb === 'moderate') return 'mostly-mod';
+    return 'mostly-heavy';
+  }
+  if (cb === 'mostly') {
+    if (rb === 'light')    return 'mostly-light';
+    if (rb === 'moderate') return 'mostly-mod';
+    return 'mostly-heavy';
+  }
+  if (rb === 'light')      return 'overcast-light';
+  if (rb === 'moderate')   return 'overcast-mod';
+  return 'overcast-heavy';
+}
+
+/* ===================== Wind icon ===================== */
+function windIcon(fromDeg, mph) {
+  const to = (fromDeg + 180) % 360;
+  const display = ((to - MANHATTAN_OFFSET) + 360) % 360;
+  return `
+    <svg viewBox="0 0 64 64">
+      <circle cx="32" cy="32" r="19" fill="none" stroke="#cbd5e1" stroke-width="2"/>
+      <text x="32" y="37" text-anchor="middle" font-size="15" font-weight="700" fill="#e6edf7">${mph}</text>
+      <g transform="rotate(${display.toFixed(1)} 32 32)">
+        <polygon points="32,4 27,14 37,14" fill="#cbd5e1"/>
+      </g>
+    </svg>`;
+}
+
+/* ===================== Time ===================== */
+function hourBand(date) {
+  const start = date.getHours();
+  const end = (start + 1) % 24;
+  const fmt = h => {
+    if (h === 0) return '12a';
+    if (h === 12) return '12p';
+    return h < 12 ? `${h}a` : `${h-12}p`;
+  };
+  return `${fmt(start)}–${fmt(end)}`;
+}
+
+function dayDividerLabel(date) {
+  const wk = date.toLocaleDateString('en-US', {weekday: 'long'});
+  const md = date.toLocaleDateString('en-US', {month: 'short', day: 'numeric'});
+  return `${wk.toUpperCase()} · ${md.toUpperCase()}`;
+}
+
+/* ===================== Render ===================== */
+async function refresh() {
+  try {
+    const res = await fetch(API_URL);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    render(data);
+    updateHeader();
+  } catch (err) {
+    const s = document.getElementById('status');
+    s.className = 'status err';
+    s.style.display = '';
+    s.textContent = `Couldn't load HRRR: ${err.message}`;
+    document.getElementById('table').style.display = 'none';
+  }
+}
+
+function updateHeader() {
+  const now = new Date();
+  const t = now.toLocaleTimeString('en-US', {hour:'numeric', minute:'2-digit'});
+  document.getElementById('updated').textContent = `Updated ${t} · HRRR hourly`;
+}
+
+function render(data) {
+  const tbody  = document.getElementById('rows');
+  const table  = document.getElementById('table');
+  const status = document.getElementById('status');
+
+  tbody.innerHTML = '';
+  const times = data.hourly.time;
+  const temp  = data.hourly.temperature_2m;
+  const cc    = data.hourly.cloud_cover;
+  const pr    = data.hourly.precipitation;
+  const ws    = data.hourly.wind_speed_10m;
+  const wd    = data.hourly.wind_direction_10m;
+  const day   = data.hourly.is_day;
+
+  const now = new Date();
+  const currentHourStart = new Date(now.getFullYear(), now.getMonth(), now.getDate(), now.getHours(), 0, 0);
+
+  let rowsShown = 0;
+  let prevDateKey = null;
+  for (let i = 0; i < times.length; i++) {
+    const ts = new Date(times[i]);
+    if (ts.getTime() < currentHourStart.getTime()) continue;
+    if (temp[i] == null || cc[i] == null || pr[i] == null ||
+        ws[i] == null || wd[i] == null) continue;
+
+    const dateKey = ts.toDateString();
+    if (prevDateKey !== null && dateKey !== prevDateKey) {
+      const divider = document.createElement('tr');
+      divider.className = 'day-divider';
+      const cell = document.createElement('td');
+      cell.colSpan = 5;
+      cell.textContent = dayDividerLabel(ts);
+      divider.appendChild(cell);
+      tbody.appendChild(divider);
+    }
+    prevDateKey = dateKey;
+
+    const cb = cloudBand(cc[i]);
+    const rb = rainBand(pr[i]);
+    const isDay = day[i] === 1;
+    const iconKey = pickIcon(cb, rb, isDay);
+
+    const tr = document.createElement('tr');
+    if (rowsShown === 0) tr.className = 'now';
+    tr.innerHTML =
+      `<td class="cell-hour">${hourBand(ts)}</td>` +
+      `<td class="cell-temp">${Math.round(temp[i])}</td>` +
+      `<td class="cell-sky">${ICONS[iconKey]}</td>` +
+      `<td class="cell-rain ${rb==='dry'?'dry':''}">${pr[i].toFixed(1)}</td>` +
+      `<td class="cell-wind">${windIcon(wd[i], Math.round(ws[i]))}</td>`;
+    tbody.appendChild(tr);
+    rowsShown++;
+  }
+
+  if (rowsShown === 0) {
+    status.textContent = 'No forecast hours in window.';
+    status.style.display = '';
+    table.style.display = 'none';
+  } else {
+    status.style.display = 'none';
+    table.style.display = '';
+  }
+}
+
+/* ===================== Boot ===================== */
+refresh();
+setInterval(refresh, REFRESH_MS);
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden) refresh();
+});
+</script>
+</body>
+</html>

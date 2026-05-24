@@ -1,0 +1,512 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>HRRR Weather App — Preview &amp; Architecture</title>
+<style>
+  :root {
+    --bg: #0b1220;
+    --panel: #111a2e;
+    --panel-2: #16213d;
+    --text: #e6edf7;
+    --muted: #8aa0bf;
+    --accent: #60a5fa;
+    --warn: #fbbf24;
+    --rain: #38bdf8;
+    --cloud-light: #94a3b8;
+    --cloud-mid: #64748b;
+    --cloud-dark: #475569;
+    --cloud-overcast: #334155;
+    --border: rgba(255,255,255,0.08);
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", system-ui, sans-serif;
+    line-height: 1.45;
+    padding: 24px 16px 80px;
+  }
+  .container { max-width: 980px; margin: 0 auto; }
+  h1 {
+    font-size: 28px;
+    margin: 0 0 4px;
+    letter-spacing: -0.02em;
+  }
+  .sub {
+    color: var(--muted);
+    margin: 0 0 32px;
+    font-size: 14px;
+  }
+  h2 {
+    font-size: 20px;
+    margin: 40px 0 12px;
+    border-bottom: 1px solid var(--border);
+    padding-bottom: 8px;
+    letter-spacing: -0.01em;
+  }
+  h3 { font-size: 15px; margin: 24px 0 8px; color: var(--muted); font-weight: 500; text-transform: uppercase; letter-spacing: 0.08em; }
+  p { margin: 8px 0; }
+  code, .mono { font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace; font-size: 13px; }
+  .panel {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    padding: 18px;
+    margin: 12px 0;
+  }
+  .arch pre {
+    background: var(--panel-2);
+    padding: 16px;
+    border-radius: 10px;
+    overflow-x: auto;
+    font-size: 12.5px;
+    color: var(--text);
+    line-height: 1.5;
+  }
+  table.stack { border-collapse: collapse; width: 100%; font-size: 14px; }
+  table.stack td { padding: 8px 12px; border-bottom: 1px solid var(--border); vertical-align: top; }
+  table.stack td:first-child { color: var(--muted); width: 36%; }
+  ul { margin: 6px 0 6px 18px; padding: 0; }
+  li { margin: 3px 0; font-size: 14px; }
+
+  /* Icon grid */
+  .icon-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+    gap: 12px;
+    margin-top: 12px;
+  }
+  .icon-card {
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 14px 10px 10px;
+    text-align: center;
+  }
+  .icon-card svg { width: 72px; height: 72px; display: block; margin: 0 auto 8px; }
+  .icon-card .name { font-size: 13px; font-weight: 600; }
+  .icon-card .meta { font-size: 11.5px; color: var(--muted); margin-top: 2px; }
+
+  /* Wind grid */
+  .wind-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+    gap: 12px;
+    margin-top: 12px;
+  }
+  .wind-card {
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 14px 10px 10px;
+    text-align: center;
+  }
+  .wind-card svg { width: 88px; height: 88px; display: block; margin: 0 auto 8px; }
+  .wind-card .name { font-size: 13px; font-weight: 600; }
+  .wind-card .meta { font-size: 11.5px; color: var(--muted); margin-top: 2px; }
+
+  /* Sample table mockup styled exactly like the planned app */
+  .mockup-frame {
+    max-width: 390px;
+    margin: 16px auto;
+    background: #000;
+    border: 1px solid #222;
+    border-radius: 36px;
+    padding: 14px 8px 24px;
+    box-shadow: 0 30px 60px rgba(0,0,0,0.6);
+  }
+  .mockup-header {
+    text-align: center;
+    color: var(--muted);
+    font-size: 12px;
+    padding: 8px 12px 14px;
+    letter-spacing: 0.05em;
+  }
+  .mockup-header strong { color: var(--text); font-weight: 600; letter-spacing: -0.01em; font-size: 15px; }
+  table.app {
+    width: 100%;
+    border-collapse: collapse;
+    table-layout: fixed;
+  }
+  table.app th, table.app td {
+    padding: 10px 4px;
+    text-align: center;
+    border-bottom: 1px solid rgba(255,255,255,0.06);
+    vertical-align: middle;
+  }
+  table.app th {
+    color: var(--muted);
+    font-size: 10.5px;
+    font-weight: 500;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    padding-bottom: 6px;
+  }
+  table.app col.c-hour { width: 22%; }
+  table.app col.c-temp { width: 16%; }
+  table.app col.c-sky  { width: 22%; }
+  table.app col.c-rain { width: 16%; }
+  table.app col.c-wind { width: 24%; }
+  .cell-hour { font-size: 13px; color: var(--text); }
+  .cell-temp { font-size: 22px; font-weight: 700; }
+  .cell-sky svg { width: 36px; height: 36px; vertical-align: middle; }
+  .cell-rain { font-size: 14px; color: var(--rain); }
+  .cell-rain.dry { color: var(--muted); }
+  .cell-wind svg { width: 42px; height: 42px; vertical-align: middle; }
+
+  .legend {
+    color: var(--muted); font-size: 12px; margin-top: 10px;
+  }
+  .ok { color: #4ade80; }
+  .note {
+    background: #1d2942;
+    border-left: 3px solid var(--accent);
+    padding: 10px 14px;
+    border-radius: 8px;
+    font-size: 13.5px;
+    margin: 12px 0;
+    color: #cde0ff;
+  }
+  a { color: var(--accent); }
+</style>
+</head>
+<body>
+<div class="container">
+
+  <h1>HRRR Weather App — Preview &amp; Architecture</h1>
+  <p class="sub">Zip 10065 (Upper East Side, Manhattan) · Full-screen iPhone PWA · Preview for approval before build</p>
+
+  <!-- ===================== 1. ARCHITECTURE ===================== -->
+  <h2>1. Proposed Architecture</h2>
+
+  <div class="panel arch">
+    <pre>
+ ┌──────────────────────┐                  ┌──────────────────────────┐
+ │  iPhone Safari       │  HTTPS / JSON    │  Open-Meteo HRRR API     │
+ │  "Add to Home Screen"│ ───────────────► │  (free, no API key)      │
+ │  → standalone PWA    │ ◄─────────────── │  model=hrrr              │
+ │  (full-screen)       │                  │  hourly: temp, clouds,   │
+ └──────────┬───────────┘                  │  precip, wind spd/dir    │
+            │                              └──────────────────────────┘
+            │ static asset fetch
+            ▼
+ ┌──────────────────────────────────────┐
+ │  Static site on GitHub Pages         │
+ │   index.html  ← table + meta tags    │
+ │   app.js      ← fetch + render loop  │
+ │   styles.css  ← dark UI, table grid  │
+ │   manifest.json + apple-touch-icons  │
+ └──────────────────────────────────────┘</pre>
+  </div>
+
+  <h3>Tech stack</h3>
+  <div class="panel">
+    <table class="stack">
+      <tr><td>Frontend</td><td>Vanilla HTML + CSS + JavaScript (no framework, no build step)</td></tr>
+      <tr><td>Icons</td><td>Inline SVG, designed to look sharp on Retina &amp; readable at 36–72&nbsp;px</td></tr>
+      <tr><td>PWA shell</td><td><span class="mono">manifest.json</span> + <span class="mono">apple-mobile-web-app-capable</span> meta tags for full-screen home-screen launch</td></tr>
+      <tr><td>Data fetch</td><td><span class="mono">fetch()</span> directly from browser — Open-Meteo is CORS-enabled, no proxy needed</td></tr>
+      <tr><td>Refresh</td><td><span class="mono">setInterval</span> every 15&nbsp;min + on visibility change (when you re-open the app)</td></tr>
+      <tr><td>Hosting</td><td>GitHub Pages (free). Alt: Cloudflare Pages, Netlify, or just <span class="mono">file://</span> locally</td></tr>
+      <tr><td>Backend</td><td><strong>None.</strong> 100% client-side.</td></tr>
+    </table>
+  </div>
+
+  <h3>Data source — Open-Meteo HRRR</h3>
+  <div class="panel">
+    <p>Open-Meteo offers NOAA's HRRR model directly. The full request we'd issue:</p>
+    <pre class="mono" style="background:var(--panel-2);padding:12px;border-radius:8px;font-size:12px;overflow-x:auto">https://api.open-meteo.com/v1/forecast
+  ?latitude=40.7644&amp;longitude=-73.9594          ← zip 10065 centroid
+  &amp;models=hrrr
+  &amp;hourly=temperature_2m,cloud_cover,precipitation,wind_speed_10m,wind_direction_10m
+  &amp;temperature_unit=celsius
+  &amp;wind_speed_unit=mph
+  &amp;precipitation_unit=mm
+  &amp;timezone=America/New_York
+  &amp;forecast_hours=48                              ← HRRR's full free window</pre>
+    <ul>
+      <li>Free, no API key, unlimited reasonable use for personal apps</li>
+      <li>HRRR runs hourly; Open-Meteo serves the latest run automatically</li>
+      <li>Returns 48 hourly forecast steps (HRRR's max horizon)</li>
+    </ul>
+  </div>
+
+  <h3>How "full-screen on iPhone" works</h3>
+  <div class="panel">
+    <ol style="margin:6px 0 0 18px;padding:0;font-size:14px">
+      <li>Open the GitHub Pages URL in Safari on the iPhone</li>
+      <li>Share → "Add to Home Screen" → tap the new icon</li>
+      <li>App opens with no browser chrome thanks to <span class="mono">apple-mobile-web-app-capable</span> + <span class="mono">display: standalone</span> in <span class="mono">manifest.json</span></li>
+    </ol>
+  </div>
+
+
+  <!-- ===================== 2. ICONS ===================== -->
+  <h2>2. Sky Condition Icons (16 types)</h2>
+  <p class="sub">Combinations of cloud cover (Open-Meteo <span class="mono">cloud_cover</span> %) and rain intensity (<span class="mono">precipitation</span> mm/hr). Day/night switches via Open-Meteo's <span class="mono">is_day</span>.</p>
+
+  <div class="note">
+    <strong>Cloud bands:</strong> Clear 0–12% · Few 12–37% · Partly 37–62% · Mostly 62–87% · Overcast 87–100%<br>
+    <strong>Rain bands (mm/hr):</strong> Dry 0 · Light 0.1–2.5 · Moderate 2.5–7.6 · Heavy &gt;7.6 (NWS scale)
+  </div>
+
+  <div class="icon-grid" id="icon-grid"></div>
+
+
+  <!-- ===================== 3. WIND ===================== -->
+  <h2>3. Wind Direction Markers</h2>
+  <p class="sub">Triangle sits on the circle perimeter at the direction the wind is going <em>to</em>, then rotated 29° counter-clockwise so that the iconic Manhattan grid (29° E of true N) reads "up = uptown / right = crosstown east."</p>
+
+  <div class="note">
+    Formula used: <span class="mono">display_angle = ((wind_from_deg + 180) − 29 + 360) mod 360</span><br>
+    Sanity check: wind <strong>from W (270°)</strong> → going to 90° → minus 29° → <strong>61° on circle</strong> ✓ (matches your example)
+  </div>
+
+  <h3>Examples — pure compass (no Manhattan adjustment) vs. Manhattan-adjusted (what the app will use)</h3>
+  <div class="wind-grid" id="wind-grid"></div>
+
+
+  <!-- ===================== 4. SAMPLE TABLE MOCKUP ===================== -->
+  <h2>4. Sample table mockup (iPhone-width)</h2>
+  <p class="sub">This is roughly how the actual app will look once data is wired in — fake numbers, real icons &amp; layout.</p>
+
+  <div class="mockup-frame">
+    <div class="mockup-header">
+      <div><strong>HRRR · 10065</strong></div>
+      <div style="margin-top:2px">Updated 11:07&nbsp;am · model run 10z</div>
+    </div>
+    <table class="app">
+      <colgroup>
+        <col class="c-hour"><col class="c-temp"><col class="c-sky"><col class="c-rain"><col class="c-wind">
+      </colgroup>
+      <thead>
+        <tr><th>Hour</th><th>°C</th><th>Sky</th><th>mm</th><th>Wind</th></tr>
+      </thead>
+      <tbody id="mockup-body"></tbody>
+    </table>
+  </div>
+
+  <p class="legend">After your approval, I'll wire this same table to live Open-Meteo HRRR data, add the manifest + icons for "Add to Home Screen," and ship to GitHub Pages so you can install it on your phone.</p>
+
+</div>
+
+<script>
+/* ----------------------------- ICON LIBRARY ----------------------------- */
+/* All icons are 64x64 viewBox. Colors come from CSS vars so a future light mode is easy. */
+
+const SUN = `
+  <g stroke="#fbbf24" stroke-width="3" stroke-linecap="round" fill="none">
+    <line x1="32" y1="4"  x2="32" y2="12"/>
+    <line x1="32" y1="52" x2="32" y2="60"/>
+    <line x1="4"  y1="32" x2="12" y2="32"/>
+    <line x1="52" y1="32" x2="60" y2="32"/>
+    <line x1="12" y1="12" x2="18" y2="18"/>
+    <line x1="46" y1="46" x2="52" y2="52"/>
+    <line x1="52" y1="12" x2="46" y2="18"/>
+    <line x1="18" y1="46" x2="12" y2="52"/>
+  </g>
+  <circle cx="32" cy="32" r="11" fill="#fbbf24"/>`;
+
+const MOON = `
+  <path d="M44 14 a20 20 0 1 0 0 36 a16 16 0 1 1 0 -36 z" fill="#e2e8f0"/>`;
+
+// Cloud builder: returns SVG fragment of a fluffy cloud at given center, scale, fill.
+function cloud({cx=32, cy=36, s=1, fill='#94a3b8'} = {}) {
+  // Base shape (radii at scale=1)
+  const r1 = 9*s, r2 = 12*s, r3 = 10*s, r4 = 8*s;
+  return `
+    <g fill="${fill}">
+      <circle cx="${cx - 12*s}" cy="${cy + 2*s}"  r="${r1}"/>
+      <circle cx="${cx}"        cy="${cy - 6*s}"  r="${r2}"/>
+      <circle cx="${cx + 12*s}" cy="${cy + 1*s}"  r="${r3}"/>
+      <circle cx="${cx + 1*s}"  cy="${cy + 6*s}"  r="${r4}"/>
+      <rect x="${cx - 18*s}" y="${cy}" width="${36*s}" height="${10*s}" rx="${4*s}"/>
+    </g>`;
+}
+
+// Rain drops below cloud. count + jitter controls intensity look.
+function rain({count=3, baseY=46, color='#38bdf8'} = {}) {
+  // distribute count drops across x ~ 16..48
+  const xs = [];
+  const span = 32;
+  const step = span / (count + 1);
+  for (let i=1; i<=count; i++) xs.push(16 + step*i);
+  // alternate y offsets for natural look
+  return `<g stroke="${color}" stroke-width="2.4" stroke-linecap="round">
+    ${xs.map((x,i)=>{
+      const y1 = baseY + (i%2 ? 0 : 3);
+      const y2 = y1 + 8;
+      return `<line x1="${x}" y1="${y1}" x2="${x-2}" y2="${y2}"/>`;
+    }).join('')}
+  </g>`;
+}
+
+// Helper to wrap one full SVG icon
+function iconSVG(inner) {
+  return `<svg viewBox="0 0 64 64">${inner}</svg>`;
+}
+
+/* ----------------------------- ICON DEFINITIONS ----------------------------- */
+
+const ICONS = [
+  // CLEAR
+  { name:'Clear (day)',       cloud:'0–12%',    rain:'0 mm', svg: iconSVG(SUN) },
+  { name:'Clear (night)',     cloud:'0–12%',    rain:'0 mm', svg: iconSVG(MOON) },
+
+  // FEW CLOUDS — small accent cloud + sun/moon
+  { name:'Few clouds (day)',  cloud:'12–37%',   rain:'0 mm', svg: iconSVG(`
+      <g transform="translate(-6,-6) scale(0.75)">${SUN}</g>
+      ${cloud({cx:40, cy:42, s:0.7, fill:'#94a3b8'})}`) },
+  { name:'Few clouds (night)', cloud:'12–37%',  rain:'0 mm', svg: iconSVG(`
+      <g transform="translate(-8,-6) scale(0.75)">${MOON}</g>
+      ${cloud({cx:40, cy:42, s:0.7, fill:'#94a3b8'})}`) },
+
+  // PARTLY CLOUDY — bigger cloud overlaps sun/moon
+  { name:'Partly cloudy (day)',   cloud:'37–62%', rain:'0 mm', svg: iconSVG(`
+      <g transform="translate(-4,-8) scale(0.7)">${SUN}</g>
+      ${cloud({cx:36, cy:40, s:0.95, fill:'#94a3b8'})}`) },
+  { name:'Partly cloudy (night)', cloud:'37–62%', rain:'0 mm', svg: iconSVG(`
+      <g transform="translate(-4,-8) scale(0.7)">${MOON}</g>
+      ${cloud({cx:36, cy:40, s:0.95, fill:'#94a3b8'})}`) },
+
+  // MOSTLY CLOUDY — large mid-grey cloud, no sun/moon
+  { name:'Mostly cloudy',     cloud:'62–87%',  rain:'0 mm', svg: iconSVG(`
+      ${cloud({cx:32, cy:34, s:1.15, fill:'#64748b'})}`) },
+
+  // OVERCAST — large very-dark cloud (significantly darker than partly)
+  { name:'Overcast',          cloud:'87–100%', rain:'0 mm', svg: iconSVG(`
+      ${cloud({cx:32, cy:32, s:1.25, fill:'#1f2937'})}`) },
+
+  // RAIN — partly cloudy + light (day)
+  { name:'Partly + light rain (day)',   cloud:'37–62%', rain:'0.1–2.5 mm', svg: iconSVG(`
+      <g transform="translate(-4,-10) scale(0.65)">${SUN}</g>
+      ${cloud({cx:36, cy:34, s:0.9, fill:'#94a3b8'})}
+      ${rain({count:2, baseY:48})}`) },
+  { name:'Partly + light rain (night)', cloud:'37–62%', rain:'0.1–2.5 mm', svg: iconSVG(`
+      <g transform="translate(-4,-10) scale(0.65)">${MOON}</g>
+      ${cloud({cx:36, cy:34, s:0.9, fill:'#94a3b8'})}
+      ${rain({count:2, baseY:48})}`) },
+
+  // RAIN — mostly cloudy stacks
+  { name:'Mostly + light rain',    cloud:'62–87%',  rain:'0.1–2.5 mm', svg: iconSVG(`
+      ${cloud({cx:32, cy:28, s:1.05, fill:'#64748b'})}
+      ${rain({count:3, baseY:46})}`) },
+  { name:'Mostly + moderate rain', cloud:'62–87%',  rain:'2.5–7.6 mm', svg: iconSVG(`
+      ${cloud({cx:32, cy:28, s:1.05, fill:'#64748b'})}
+      ${rain({count:5, baseY:44})}`) },
+  { name:'Mostly + heavy rain',    cloud:'62–87%',  rain:'>7.6 mm',    svg: iconSVG(`
+      ${cloud({cx:32, cy:28, s:1.05, fill:'#64748b'})}
+      ${rain({count:7, baseY:42})}`) },
+
+  // RAIN — overcast stacks (very-dark cloud)
+  { name:'Overcast + light rain',    cloud:'87–100%', rain:'0.1–2.5 mm', svg: iconSVG(`
+      ${cloud({cx:32, cy:26, s:1.15, fill:'#1f2937'})}
+      ${rain({count:3, baseY:46})}`) },
+  { name:'Overcast + moderate rain', cloud:'87–100%', rain:'2.5–7.6 mm', svg: iconSVG(`
+      ${cloud({cx:32, cy:26, s:1.15, fill:'#1f2937'})}
+      ${rain({count:5, baseY:44})}`) },
+  { name:'Overcast + heavy rain',    cloud:'87–100%', rain:'>7.6 mm',    svg: iconSVG(`
+      ${cloud({cx:32, cy:26, s:1.15, fill:'#1f2937'})}
+      ${rain({count:7, baseY:42})}`) },
+];
+
+const grid = document.getElementById('icon-grid');
+ICONS.forEach(i => {
+  const card = document.createElement('div');
+  card.className = 'icon-card';
+  card.innerHTML = `${i.svg}
+    <div class="name">${i.name}</div>
+    <div class="meta">cloud ${i.cloud} · rain ${i.rain}</div>`;
+  grid.appendChild(card);
+});
+
+
+/* ----------------------------- WIND ICON ----------------------------- */
+/*
+   Convention: triangle sits at the angle the wind is going TO,
+   then we rotate by Manhattan grid offset (29° E of N) so the displayed
+   compass uses Manhattan-up = "uptown."
+
+   display_angle_deg = ((wind_from_deg + 180) - 29 + 360) mod 360
+
+   Triangle points OUTWARD (away from circle center) so it visually reads
+   like "wind is heading this way →"
+*/
+const MANHATTAN_OFFSET = 29; // degrees
+
+function windIcon(fromDeg, mph, {adjustManhattan=true} = {}) {
+  const toDeg = (fromDeg + 180) % 360;
+  const displayAngle = adjustManhattan
+    ? ((toDeg - MANHATTAN_OFFSET) + 360) % 360
+    : toDeg;
+
+  // Triangle drawn pointing up at top of circle, then rotated.
+  // Outward-pointing triangle: tip at y=6, base at y=14.
+  return `
+    <svg viewBox="0 0 64 64">
+      <circle cx="32" cy="32" r="19" fill="none" stroke="#cbd5e1" stroke-width="2"/>
+      <text x="32" y="37" text-anchor="middle" font-size="15" font-weight="700" fill="#e6edf7">${mph}</text>
+      <g transform="rotate(${displayAngle.toFixed(2)} 32 32)">
+        <polygon points="32,4 27,14 37,14" fill="#cbd5e1"/>
+      </g>
+    </svg>`;
+}
+
+const WIND_EXAMPLES = [
+  { from:   0, label: 'From N (0°)'   },
+  { from:  45, label: 'From NE (45°)' },
+  { from:  90, label: 'From E (90°)'  },
+  { from: 135, label: 'From SE (135°)' },
+  { from: 180, label: 'From S (180°)' },
+  { from: 225, label: 'From SW (225°)' },
+  { from: 270, label: 'From W (270°)' },
+  { from: 315, label: 'From NW (315°)' },
+];
+
+const wgrid = document.getElementById('wind-grid');
+WIND_EXAMPLES.forEach(w => {
+  const card = document.createElement('div');
+  card.className = 'wind-card';
+  const rawAngle = (w.from + 180) % 360;
+  const adjAngle = ((rawAngle - MANHATTAN_OFFSET) + 360) % 360;
+  card.innerHTML = `
+    ${windIcon(w.from, 12, {adjustManhattan: true})}
+    <div class="name">${w.label}</div>
+    <div class="meta">
+      compass-to: ${rawAngle}° → MHTN: <span style="color:#fbbf24">${adjAngle.toFixed(0)}°</span>
+    </div>`;
+  wgrid.appendChild(card);
+});
+
+
+/* ----------------------------- SAMPLE TABLE ROWS ----------------------------- */
+const SAMPLE_ROWS = [
+  { hour:'11a–12p', tempC:18, sky:'Partly cloudy (day)',    rain:0,   windFrom:240, mph:8  },
+  { hour:'12–1p',   tempC:19, sky:'Mostly cloudy',          rain:0,   windFrom:230, mph:11 },
+  { hour:'1–2p',    tempC:19, sky:'Mostly + light rain',    rain:0.6, windFrom:210, mph:14 },
+  { hour:'2–3p',    tempC:18, sky:'Overcast + moderate rain', rain:4.2, windFrom:180, mph:16 },
+  { hour:'3–4p',    tempC:17, sky:'Overcast + heavy rain',  rain:9.1, windFrom:170, mph:18 },
+  { hour:'4–5p',    tempC:17, sky:'Overcast + light rain',  rain:1.1, windFrom:200, mph:13 },
+  { hour:'5–6p',    tempC:16, sky:'Mostly cloudy',          rain:0,   windFrom:270, mph:9  },
+  { hour:'6–7p',    tempC:15, sky:'Few clouds (night)',     rain:0,   windFrom:290, mph:7  },
+  { hour:'7–8p',    tempC:14, sky:'Clear (night)',          rain:0,   windFrom:310, mph:6  },
+];
+
+const skyByName = Object.fromEntries(ICONS.map(i => [i.name, i.svg]));
+const body = document.getElementById('mockup-body');
+SAMPLE_ROWS.forEach(r => {
+  const tr = document.createElement('tr');
+  tr.innerHTML = `
+    <td class="cell-hour">${r.hour}</td>
+    <td class="cell-temp">${r.tempC}</td>
+    <td class="cell-sky">${skyByName[r.sky] || ''}</td>
+    <td class="cell-rain ${r.rain===0?'dry':''}">${r.rain.toFixed(1)}</td>
+    <td class="cell-wind">${windIcon(r.windFrom, r.mph, {adjustManhattan:true})}</td>`;
+  body.appendChild(tr);
+});
+</script>
+</body>
+</html>
