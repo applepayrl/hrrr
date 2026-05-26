@@ -137,7 +137,7 @@ const API_URL =
   'https://api.open-meteo.com/v1/forecast' +
   `?latitude=${COORDS.lat}&longitude=${COORDS.lon}` +
   '&models=gfs_hrrr' +
-  '&hourly=temperature_2m,cloud_cover,precipitation,wind_speed_10m,wind_direction_10m,is_day' +
+  '&hourly=temperature_2m,cloud_cover_low,cloud_cover_mid,cloud_cover_high,precipitation,wind_speed_10m,wind_direction_10m,is_day' +
   '&temperature_unit=celsius&wind_speed_unit=mph&precipitation_unit=mm' +
   '&timezone=America/New_York&forecast_hours=48';
 
@@ -210,6 +210,16 @@ const ICONS = {
 };
 
 /* ===================== Classifiers ===================== */
+/*
+ * Perceptual cloud cover: how cloudy the sky LOOKS from the ground.
+ * Low clouds (cumulus, stratus) are opaque   → weight 1.0
+ * Mid clouds (altostratus)                   → weight 0.7
+ * High clouds (cirrus) are mostly translucent → weight 0.3
+ * We use the max of the three so any solid lower layer dominates.
+ */
+function effectiveCloud(low, mid, high) {
+  return Math.max(low, mid * 0.7, high * 0.3);
+}
 function cloudBand(pct) {
   if (pct < 12) return 'clear';
   if (pct < 37) return 'few';
@@ -312,7 +322,9 @@ function render(data) {
   tbody.innerHTML = '';
   const times = data.hourly.time;
   const temp  = data.hourly.temperature_2m;
-  const cc    = data.hourly.cloud_cover;
+  const ccL   = data.hourly.cloud_cover_low;
+  const ccM   = data.hourly.cloud_cover_mid;
+  const ccH   = data.hourly.cloud_cover_high;
   const pr    = data.hourly.precipitation;
   const ws    = data.hourly.wind_speed_10m;
   const wd    = data.hourly.wind_direction_10m;
@@ -326,8 +338,8 @@ function render(data) {
   for (let i = 0; i < times.length; i++) {
     const ts = new Date(times[i]);
     if (ts.getTime() < currentHourStart.getTime()) continue;
-    if (temp[i] == null || cc[i] == null || pr[i] == null ||
-        ws[i] == null || wd[i] == null) continue;
+    if (temp[i] == null || ccL[i] == null || ccM[i] == null || ccH[i] == null ||
+        pr[i] == null || ws[i] == null || wd[i] == null) continue;
 
     const dateKey = ts.toDateString();
     if (prevDateKey !== null && dateKey !== prevDateKey) {
@@ -341,7 +353,8 @@ function render(data) {
     }
     prevDateKey = dateKey;
 
-    const cb = cloudBand(cc[i]);
+    const eff = effectiveCloud(ccL[i], ccM[i], ccH[i]);
+    const cb = cloudBand(eff);
     const rb = rainBand(pr[i]);
     const isDay = day[i] === 1;
     const iconKey = pickIcon(cb, rb, isDay);
