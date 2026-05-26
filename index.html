@@ -187,6 +187,38 @@ function rain({count=3, baseY=46} = {}) {
   </g>`;
 }
 
+// 6-point asterisk snowflakes — distinct from rain's angled lines
+function snow({count=3, baseY=46} = {}) {
+  const xs = [];
+  const step = 32 / (count + 1);
+  for (let i=1; i<=count; i++) xs.push(16 + step*i);
+  return `<g stroke="#f1f5f9" stroke-width="1.3" stroke-linecap="round" fill="none">
+    ${xs.map((x,i)=>{
+      const y = baseY + 4 + (i%2 ? 0 : 3);
+      return `<g transform="translate(${x},${y})">
+        <line x1="-2.6" y1="0"     x2="2.6"  y2="0"/>
+        <line x1="-1.3" y1="-2.25" x2="1.3"  y2="2.25"/>
+        <line x1="-1.3" y1="2.25"  x2="1.3"  y2="-2.25"/>
+      </g>`;
+    }).join('')}
+  </g>`;
+}
+
+// Fog: stacked horizontal mist bands, no cloud body
+const FOG = `
+  <g stroke="#cbd5e1" stroke-width="3" stroke-linecap="round" fill="none">
+    <line x1="14" y1="14" x2="50" y2="14"/>
+    <line x1="8"  y1="24" x2="56" y2="24"/>
+    <line x1="12" y1="34" x2="52" y2="34"/>
+    <line x1="8"  y1="44" x2="56" y2="44"/>
+    <line x1="14" y1="54" x2="50" y2="54"/>
+  </g>`;
+
+// Lightning bolt — goes inside the thunderstorm cloud
+const LIGHTNING = `
+  <path d="M 33 36 L 26 50 L 31 50 L 26 62 L 39 47 L 33 47 L 37 36 Z"
+        fill="#fbbf24" stroke="#f59e0b" stroke-width="0.6" stroke-linejoin="round"/>`;
+
 /* wrap inner SVG fragments; dy lets us vertically center composite icons
    whose content bbox isn't naturally centered on the 0..64 viewBox */
 const wrap = (inner, dy=0) =>
@@ -213,6 +245,12 @@ const ICONS = {
   'overcast-light':    wrap(`${cloud({cx:32, cy:26, s:1.15, fill:CLOUD_DARK})}${rain({count:3, baseY:46})}`),
   'overcast-mod':      wrap(`${cloud({cx:32, cy:26, s:1.15, fill:CLOUD_DARK})}${rain({count:5, baseY:44})}`, 2),
   'overcast-heavy':    wrap(`${cloud({cx:32, cy:26, s:1.15, fill:CLOUD_DARK})}${rain({count:7, baseY:42})}`, 3),
+  // snow: same cloud structure as rain, but snowflakes instead of raindrops
+  'snow-light':        wrap(`${cloud({cx:32, cy:28, s:1.05, fill:CLOUD_MEDIUM})}${snow({count:3, baseY:46})}`),
+  'snow-mod':          wrap(`${cloud({cx:32, cy:28, s:1.05, fill:CLOUD_MEDIUM})}${snow({count:5, baseY:44})}`),
+  'snow-heavy':        wrap(`${cloud({cx:32, cy:26, s:1.15, fill:CLOUD_DARK})}${snow({count:7, baseY:42})}`, 4),
+  'fog':               wrap(FOG, -2),
+  'thunderstorm':      wrap(`${cloud({cx:32, cy:24, s:1.15, fill:CLOUD_DARK})}${LIGHTNING}`),
 };
 
 /* ===================== Classifiers ===================== */
@@ -257,7 +295,14 @@ function rainBand(mm) {
   if (mm < 7.6) return 'moderate';
   return 'heavy';
 }
-function pickIcon(cb, rb, isDay) {
+function pickIcon(cb, rb, isDay, wcode) {
+  // Special weather codes take precedence over cloud + rain logic
+  if (wcode === 45 || wcode === 48) return 'fog';                    // fog / freezing fog
+  if (wcode === 95 || wcode === 96 || wcode === 99) return 'thunderstorm';
+  if (wcode === 75 || wcode === 86) return 'snow-heavy';             // heavy snow / heavy snow showers
+  if (wcode === 73) return 'snow-mod';                               // moderate snow
+  if (wcode === 71 || wcode === 77 || wcode === 85) return 'snow-light'; // slight snow, grains, slight showers
+
   if (rb === 'dry') {
     if (cb === 'clear')    return isDay ? 'clear-day'   : 'clear-night';
     if (cb === 'few')      return isDay ? 'few-day'     : 'few-night';
@@ -265,7 +310,7 @@ function pickIcon(cb, rb, isDay) {
     if (cb === 'mostly')   return 'mostly';
     return 'overcast';
   }
-  // wet
+  // wet (rain)
   if (cb === 'clear' || cb === 'few' || cb === 'partly') {
     if (rb === 'light')    return isDay ? 'partly-rain-day' : 'partly-rain-night';
     if (rb === 'moderate') return 'mostly-mod';
@@ -382,7 +427,7 @@ function render(data) {
     const cb = cloudBand(eff);
     const rb = rainBand(pr[i]);
     const isDay = day[i] === 1;
-    const iconKey = pickIcon(cb, rb, isDay);
+    const iconKey = pickIcon(cb, rb, isDay, wc[i]);
 
     const tr = document.createElement('tr');
     if (rowsShown === 0) tr.className = 'now';
