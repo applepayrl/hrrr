@@ -137,7 +137,7 @@ const API_URL =
   'https://api.open-meteo.com/v1/forecast' +
   `?latitude=${COORDS.lat}&longitude=${COORDS.lon}` +
   '&models=gfs_hrrr' +
-  '&hourly=temperature_2m,cloud_cover_low,cloud_cover_mid,cloud_cover_high,precipitation,wind_speed_10m,wind_direction_10m,is_day' +
+  '&hourly=temperature_2m,cloud_cover_low,cloud_cover_mid,cloud_cover_high,precipitation,weather_code,wind_speed_10m,wind_direction_10m,is_day' +
   '&temperature_unit=celsius&wind_speed_unit=mph&precipitation_unit=mm' +
   '&timezone=America/New_York&forecast_hours=48';
 
@@ -212,13 +212,31 @@ const ICONS = {
 /* ===================== Classifiers ===================== */
 /*
  * Perceptual cloud cover: how cloudy the sky LOOKS from the ground.
- * Low clouds (cumulus, stratus) are opaque   → weight 1.0
- * Mid clouds (altostratus)                   → weight 0.7
- * High clouds (cirrus) are mostly translucent → weight 0.3
- * We use the max of the three so any solid lower layer dominates.
+ *
+ *   Opacity weights (fraction of sunlight each saturated layer blocks):
+ *     Low  (cumulus, stratus, stratocumulus) → 1.0  opaque
+ *     Mid  (altostratus, altocumulus)        → 0.8  dense but some light
+ *     High (cirrus, cirrostratus)            → 0.25 wispy, lets sun through
+ *
+ *   Stacking: layers occlude *independently*, so we combine probabilistically
+ *   instead of taking the max. With layers L,M,H of opacities oL,oM,oH and
+ *   coverages cL,cM,cH ∈ [0,1], the chance any line-of-sight to the sun
+ *   is clear ≈ (1 - cL·oL) · (1 - cM·oM) · (1 - cH·oH).
+ *
+ *   Overrides (sky FEEL beats raw % when these apply):
+ *     • precipitation ≥ 0.1 mm/h  →  at least "mostly cloudy" (rain ⇒ dark sky)
+ *     • precipitation ≥ 2.5 mm/h  →  at least "overcast"
+ *     • weather_code 45 or 48 (fog) → at least "overcast"
  */
-function effectiveCloud(low, mid, high) {
-  return Math.max(low, mid * 0.7, high * 0.3);
+function effectiveCloud(low, mid, high, precip, wcode) {
+  const probClear = (1 - low/100 * 1.00)
+                  * (1 - mid/100 * 0.80)
+                  * (1 - high/100 * 0.25);
+  let eff = 100 * (1 - probClear);
+  if (precip != null && precip >= 0.1) eff = Math.max(eff, 75);  // mostly
+  if (precip != null && precip >= 2.5) eff = Math.max(eff, 90);  // overcast
+  if (wcode === 45 || wcode === 48)    eff = Math.max(eff, 92);  // fog
+  return eff;
 }
 function cloudBand(pct) {
   if (pct < 12) return 'clear';
@@ -326,6 +344,7 @@ function render(data) {
   const ccM   = data.hourly.cloud_cover_mid;
   const ccH   = data.hourly.cloud_cover_high;
   const pr    = data.hourly.precipitation;
+  const wc    = data.hourly.weather_code;
   const ws    = data.hourly.wind_speed_10m;
   const wd    = data.hourly.wind_direction_10m;
   const day   = data.hourly.is_day;
@@ -353,7 +372,7 @@ function render(data) {
     }
     prevDateKey = dateKey;
 
-    const eff = effectiveCloud(ccL[i], ccM[i], ccH[i]);
+    const eff = effectiveCloud(ccL[i], ccM[i], ccH[i], pr[i], wc[i]);
     const cb = cloudBand(eff);
     const rb = rainBand(pr[i]);
     const isDay = day[i] === 1;
