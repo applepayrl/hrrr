@@ -187,26 +187,32 @@ function rain({count=3, baseY=46} = {}) {
   </g>`;
 }
 
-const wrap = (inner) => `<svg viewBox="0 0 64 64">${inner}</svg>`;
+/* wrap inner SVG fragments; dy lets us vertically center composite icons
+   whose content bbox isn't naturally centered on the 0..64 viewBox */
+const wrap = (inner, dy=0) =>
+  `<svg viewBox="0 0 64 64">${dy ? `<g transform="translate(0,${dy})">${inner}</g>` : inner}</svg>`;
 
 /* ===================== Icon catalog ===================== */
+/* The second arg to wrap() is a vertical shift (in viewBox units) to put the
+   content's bbox center at y=32. Values came from measured bboxes — composite
+   icons that mix sun/moon and cloud are visually top-heavy without this. */
 const ICONS = {
   'clear-day':         wrap(SUN),
   'clear-night':       wrap(MOON),
-  'few-day':           wrap(`<g transform="translate(-6,-6) scale(0.75)">${SUN}</g>${cloud({cx:40, cy:42, s:0.7})}`),
-  'few-night':         wrap(`<g transform="translate(-8,-6) scale(0.75)">${MOON}</g>${cloud({cx:40, cy:42, s:0.7})}`),
-  'partly-day':        wrap(`<g transform="translate(-4,-8) scale(0.7)">${SUN}</g>${cloud({cx:36, cy:40, s:0.95})}`),
-  'partly-night':      wrap(`<g transform="translate(-4,-8) scale(0.7)">${MOON}</g>${cloud({cx:36, cy:40, s:0.95})}`),
+  'few-day':           wrap(`<g transform="translate(-6,-6) scale(0.75)">${SUN}</g>${cloud({cx:40, cy:42, s:0.7})}`, 8),
+  'few-night':         wrap(`<g transform="translate(-8,-6) scale(0.75)">${MOON}</g>${cloud({cx:40, cy:42, s:0.7})}`, 5),
+  'partly-day':        wrap(`<g transform="translate(-4,-8) scale(0.7)">${SUN}</g>${cloud({cx:36, cy:40, s:0.95})}`, 8),
+  'partly-night':      wrap(`<g transform="translate(-4,-8) scale(0.7)">${MOON}</g>${cloud({cx:36, cy:40, s:0.95})}`, 5),
   'mostly':            wrap(cloud({cx:32, cy:34, s:1.15, fill:CLOUD_MEDIUM})),
-  'overcast':          wrap(cloud({cx:32, cy:32, s:1.25, fill:CLOUD_DARK})),
-  'partly-rain-day':   wrap(`<g transform="translate(-4,-10) scale(0.65)">${SUN}</g>${cloud({cx:36, cy:34, s:0.9})}${rain({count:2, baseY:48})}`),
-  'partly-rain-night': wrap(`<g transform="translate(-4,-10) scale(0.65)">${MOON}</g>${cloud({cx:36, cy:34, s:0.9})}${rain({count:2, baseY:48})}`),
+  'overcast':          wrap(cloud({cx:32, cy:32, s:1.25, fill:CLOUD_DARK}), 3),
+  'partly-rain-day':   wrap(`<g transform="translate(-4,-10) scale(0.65)">${SUN}</g>${cloud({cx:36, cy:34, s:0.9})}${rain({count:2, baseY:48})}`, 6),
+  'partly-rain-night': wrap(`<g transform="translate(-4,-10) scale(0.65)">${MOON}</g>${cloud({cx:36, cy:34, s:0.9})}${rain({count:2, baseY:48})}`, 4),
   'mostly-light':      wrap(`${cloud({cx:32, cy:28, s:1.05, fill:CLOUD_MEDIUM})}${rain({count:3, baseY:46})}`),
   'mostly-mod':        wrap(`${cloud({cx:32, cy:28, s:1.05, fill:CLOUD_MEDIUM})}${rain({count:5, baseY:44})}`),
   'mostly-heavy':      wrap(`${cloud({cx:32, cy:28, s:1.05, fill:CLOUD_MEDIUM})}${rain({count:7, baseY:42})}`),
   'overcast-light':    wrap(`${cloud({cx:32, cy:26, s:1.15, fill:CLOUD_DARK})}${rain({count:3, baseY:46})}`),
-  'overcast-mod':      wrap(`${cloud({cx:32, cy:26, s:1.15, fill:CLOUD_DARK})}${rain({count:5, baseY:44})}`),
-  'overcast-heavy':    wrap(`${cloud({cx:32, cy:26, s:1.15, fill:CLOUD_DARK})}${rain({count:7, baseY:42})}`),
+  'overcast-mod':      wrap(`${cloud({cx:32, cy:26, s:1.15, fill:CLOUD_DARK})}${rain({count:5, baseY:44})}`, 2),
+  'overcast-heavy':    wrap(`${cloud({cx:32, cy:26, s:1.15, fill:CLOUD_DARK})}${rain({count:7, baseY:42})}`, 3),
 };
 
 /* ===================== Classifiers ===================== */
@@ -294,13 +300,13 @@ function windIcon(fromDeg, mph) {
 /* ===================== Time ===================== */
 function hourBand(date) {
   const start = date.getHours();
-  const end = (start + 1) % 24;
-  const fmt = h => {
-    if (h === 0) return '12a';
-    if (h === 12) return '12p';
-    return h < 12 ? `${h}a` : `${h-12}p`;
-  };
-  return `${fmt(start)}–${fmt(end)}`;
+  const end   = (start + 1) % 24;
+  const ap    = h => h < 12 ? 'a' : 'p';          // 0..11 = a, 12..23 = p
+  const num   = h => (h === 0 || h === 12) ? 12 : h % 12;
+  // Drop the first a/p when both ends share it (e.g. 1p–2p → 1–2p)
+  return ap(start) === ap(end)
+    ? `${num(start)}–${num(end)}${ap(end)}`
+    : `${num(start)}${ap(start)}–${num(end)}${ap(end)}`;
 }
 
 function dayDividerLabel(date) {
