@@ -142,10 +142,11 @@ const API_URL =
   '&timezone=America/New_York&forecast_hours=48';
 
 /* ===================== Cloud palette ===================== */
-/* Significantly different greys: partly is very light, overcast is very dark */
-const CLOUD_LIGHT    = '#cbd5e1';   // partly / few clouds
-const CLOUD_MEDIUM   = '#64748b';   // mostly cloudy
-const CLOUD_DARK     = '#1f2937';   // overcast (much darker)
+/* light → white front → medium (snow) → dark (overcast/storm) */
+const CLOUD_LIGHT    = '#cbd5e1';   // few/partly clouds; back cloud of two-cloud "mostly"
+const CLOUD_WHITE    = '#f1f5f9';   // front cloud of two-cloud "mostly" (near-white)
+const CLOUD_MEDIUM   = '#64748b';   // snow-light / snow-mod
+const CLOUD_DARK     = '#475569';   // overcast, thunderstorm, snow-heavy (mid-dark grey)
 
 /* ===================== Icon primitives ===================== */
 const SUN = `
@@ -233,15 +234,15 @@ const ICONS = {
   'clear-night':       wrap(MOON),
   'few-day':           wrap(`<g transform="translate(-6,-6) scale(0.75)">${SUN}</g>${cloud({cx:40, cy:42, s:0.7})}`, 8),
   'few-night':         wrap(`<g transform="translate(-8,-6) scale(0.75)">${MOON}</g>${cloud({cx:40, cy:42, s:0.7})}`, 5),
-  'partly-day':        wrap(`<g transform="translate(-4,-8) scale(0.7)">${SUN}</g>${cloud({cx:36, cy:40, s:0.95})}`, 8),
-  'partly-night':      wrap(`<g transform="translate(-4,-8) scale(0.7)">${MOON}</g>${cloud({cx:36, cy:40, s:0.95})}`, 5),
-  'mostly':            wrap(cloud({cx:32, cy:34, s:1.15, fill:CLOUD_MEDIUM})),
+  'partly-day':        wrap(`<g transform="translate(-2,-2) scale(0.7)">${SUN}</g>${cloud({cx:34, cy:36, s:0.95, fill:CLOUD_LIGHT})}`, 7),
+  'partly-night':      wrap(`<g transform="translate(-2,-2) scale(0.7)">${MOON}</g>${cloud({cx:34, cy:36, s:0.95, fill:CLOUD_LIGHT})}`, 3),
+  'mostly':            wrap(`${cloud({cx:22, cy:30, s:0.65, fill:CLOUD_LIGHT})}${cloud({cx:42, cy:38, s:0.78, fill:CLOUD_WHITE})}`, -2),
   'overcast':          wrap(cloud({cx:32, cy:32, s:1.25, fill:CLOUD_DARK}), 3),
-  'partly-rain-day':   wrap(`<g transform="translate(-4,-10) scale(0.65)">${SUN}</g>${cloud({cx:36, cy:34, s:0.9})}${rain({count:2, baseY:48})}`, 6),
-  'partly-rain-night': wrap(`<g transform="translate(-4,-10) scale(0.65)">${MOON}</g>${cloud({cx:36, cy:34, s:0.9})}${rain({count:2, baseY:48})}`, 4),
-  'mostly-light':      wrap(`${cloud({cx:32, cy:28, s:1.05, fill:CLOUD_MEDIUM})}${rain({count:3, baseY:46})}`),
-  'mostly-mod':        wrap(`${cloud({cx:32, cy:28, s:1.05, fill:CLOUD_MEDIUM})}${rain({count:5, baseY:44})}`),
-  'mostly-heavy':      wrap(`${cloud({cx:32, cy:28, s:1.05, fill:CLOUD_MEDIUM})}${rain({count:7, baseY:42})}`),
+  'partly-rain-day':   wrap(`<g transform="translate(-2,-4) scale(0.65)">${SUN}</g>${cloud({cx:34, cy:32, s:0.9, fill:CLOUD_LIGHT})}${rain({count:2, baseY:46})}`, 4),
+  'partly-rain-night': wrap(`<g transform="translate(-2,-4) scale(0.65)">${MOON}</g>${cloud({cx:34, cy:32, s:0.9, fill:CLOUD_LIGHT})}${rain({count:2, baseY:46})}`, 2),
+  'mostly-light':      wrap(`${cloud({cx:20, cy:24, s:0.55, fill:CLOUD_LIGHT})}${cloud({cx:42, cy:30, s:0.70, fill:CLOUD_WHITE})}${rain({count:3, baseY:44})}`, -3),
+  'mostly-mod':        wrap(`${cloud({cx:20, cy:24, s:0.55, fill:CLOUD_LIGHT})}${cloud({cx:42, cy:30, s:0.70, fill:CLOUD_WHITE})}${rain({count:5, baseY:42})}`, -2),
+  'mostly-heavy':      wrap(`${cloud({cx:20, cy:24, s:0.55, fill:CLOUD_LIGHT})}${cloud({cx:42, cy:30, s:0.70, fill:CLOUD_WHITE})}${rain({count:7, baseY:40})}`, -1),
   'overcast-light':    wrap(`${cloud({cx:32, cy:26, s:1.15, fill:CLOUD_DARK})}${rain({count:3, baseY:46})}`),
   'overcast-mod':      wrap(`${cloud({cx:32, cy:26, s:1.15, fill:CLOUD_DARK})}${rain({count:5, baseY:44})}`, 2),
   'overcast-heavy':    wrap(`${cloud({cx:32, cy:26, s:1.15, fill:CLOUD_DARK})}${rain({count:7, baseY:42})}`, 3),
