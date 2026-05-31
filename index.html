@@ -229,20 +229,29 @@ const wrap = (inner, dy=0) =>
 /* The second arg to wrap() is a vertical shift (in viewBox units) to put the
    content's bbox center at y=32. Values came from measured bboxes — composite
    icons that mix sun/moon and cloud are visually top-heavy without this. */
+
+// Shared two-cloud body for the rain-bearing "mostly" variants
+// (smaller + higher than the dry "mostly" pair to leave room for raindrops).
+const TWO_CLOUD_RAIN = `${cloud({cx:20, cy:24, s:0.55})}${cloud({cx:42, cy:30, s:0.70, fill:CLOUD_WHITE})}`;
+
+// Partly-cloudy bodies parameterized by sun-or-moon glyph (only diff between day/night).
+const partlyBody     = (g) => `<g transform="translate(-2,-2) scale(0.7)">${g}</g>${cloud({cx:34, cy:36, s:0.95})}`;
+const partlyRainBody = (g) => `<g transform="translate(-2,-4) scale(0.65)">${g}</g>${cloud({cx:34, cy:32, s:0.9})}${rain({count:2, baseY:46})}`;
+
 const ICONS = {
   'clear-day':         wrap(SUN),
   'clear-night':       wrap(MOON),
   'few-day':           wrap(`<g transform="translate(-6,-6) scale(0.75)">${SUN}</g>${cloud({cx:40, cy:42, s:0.7})}`, 8),
   'few-night':         wrap(`<g transform="translate(-8,-6) scale(0.75)">${MOON}</g>${cloud({cx:40, cy:42, s:0.7})}`, 5),
-  'partly-day':        wrap(`<g transform="translate(-2,-2) scale(0.7)">${SUN}</g>${cloud({cx:34, cy:36, s:0.95, fill:CLOUD_LIGHT})}`, 7),
-  'partly-night':      wrap(`<g transform="translate(-2,-2) scale(0.7)">${MOON}</g>${cloud({cx:34, cy:36, s:0.95, fill:CLOUD_LIGHT})}`, 3),
-  'mostly':            wrap(`${cloud({cx:22, cy:30, s:0.65, fill:CLOUD_LIGHT})}${cloud({cx:42, cy:38, s:0.78, fill:CLOUD_WHITE})}`, -2),
+  'partly-day':        wrap(partlyBody(SUN), 7),
+  'partly-night':      wrap(partlyBody(MOON), 3),
+  'mostly':            wrap(`${cloud({cx:22, cy:30, s:0.65})}${cloud({cx:42, cy:38, s:0.78, fill:CLOUD_WHITE})}`, -2),
   'overcast':          wrap(cloud({cx:32, cy:32, s:1.25, fill:CLOUD_DARK}), 3),
-  'partly-rain-day':   wrap(`<g transform="translate(-2,-4) scale(0.65)">${SUN}</g>${cloud({cx:34, cy:32, s:0.9, fill:CLOUD_LIGHT})}${rain({count:2, baseY:46})}`, 4),
-  'partly-rain-night': wrap(`<g transform="translate(-2,-4) scale(0.65)">${MOON}</g>${cloud({cx:34, cy:32, s:0.9, fill:CLOUD_LIGHT})}${rain({count:2, baseY:46})}`, 2),
-  'mostly-light':      wrap(`${cloud({cx:20, cy:24, s:0.55, fill:CLOUD_LIGHT})}${cloud({cx:42, cy:30, s:0.70, fill:CLOUD_WHITE})}${rain({count:3, baseY:44})}`, -3),
-  'mostly-mod':        wrap(`${cloud({cx:20, cy:24, s:0.55, fill:CLOUD_LIGHT})}${cloud({cx:42, cy:30, s:0.70, fill:CLOUD_WHITE})}${rain({count:5, baseY:42})}`, -2),
-  'mostly-heavy':      wrap(`${cloud({cx:20, cy:24, s:0.55, fill:CLOUD_LIGHT})}${cloud({cx:42, cy:30, s:0.70, fill:CLOUD_WHITE})}${rain({count:7, baseY:40})}`, -1),
+  'partly-rain-day':   wrap(partlyRainBody(SUN), 4),
+  'partly-rain-night': wrap(partlyRainBody(MOON), 2),
+  'mostly-light':      wrap(`${TWO_CLOUD_RAIN}${rain({count:3, baseY:44})}`, -3),
+  'mostly-mod':        wrap(`${TWO_CLOUD_RAIN}${rain({count:5, baseY:42})}`, -2),
+  'mostly-heavy':      wrap(`${TWO_CLOUD_RAIN}${rain({count:7, baseY:40})}`, -1),
   'overcast-light':    wrap(`${cloud({cx:32, cy:26, s:1.15, fill:CLOUD_DARK})}${rain({count:3, baseY:46})}`),
   'overcast-mod':      wrap(`${cloud({cx:32, cy:26, s:1.15, fill:CLOUD_DARK})}${rain({count:5, baseY:44})}`, 2),
   'overcast-heavy':    wrap(`${cloud({cx:32, cy:26, s:1.15, fill:CLOUD_DARK})}${rain({count:7, baseY:42})}`, 3),
