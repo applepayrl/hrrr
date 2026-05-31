@@ -61,7 +61,12 @@
     border-bottom: 1px solid rgba(255,255,255,0.06);
     vertical-align: middle;
   }
-  th {
+  /* Sticky offsets — main header height (~55px + safe-area), then thead (~34px) */
+  :root {
+    --header-h: calc(55px + env(safe-area-inset-top));
+    --thead-h:  34px;
+  }
+  thead th {
     color: #8aa0bf;
     font-size: 10.5px;
     font-weight: 500;
@@ -69,12 +74,23 @@
     letter-spacing: 0.08em;
     padding: 14px 2px 8px;
     background: #000;
+    position: sticky;
+    top: var(--header-h);
+    z-index: 8;
   }
+  th.tap {
+    cursor: pointer;
+    -webkit-user-select: none;
+    user-select: none;
+    text-decoration: underline dotted rgba(255,255,255,0.25);
+    text-underline-offset: 3px;
+  }
+  th.tap:active { color: #cbd5e1; }
   col.c-hour { width: 22%; }
-  col.c-temp { width: 16%; }
+  col.c-temp { width: 20%; }
   col.c-sky  { width: 18%; }
   col.c-rain { width: 14%; }
-  col.c-wind { width: 30%; }
+  col.c-wind { width: 26%; }
   .cell-hour { font-size: 13px; line-height: 1.1; }
   .cell-temp { font-size: 24px; font-weight: 700; line-height: 1; }
   .cell-sky  { padding: 6px 2px; }
@@ -90,14 +106,19 @@
   tr.day-divider td {
     padding: 12px 12px 10px;
     text-align: center;
-    background: rgba(255,255,255,0.045);
+    /* solid bg so content scrolling underneath the sticky divider doesn't show through */
+    background: #0c0c0c;
     color: #cbd5e1;
     font-size: 11.5px;
     font-weight: 600;
     letter-spacing: 0.14em;
     border-top: 1px solid rgba(255,255,255,0.1);
     border-bottom: 1px solid rgba(255,255,255,0.1);
+    position: sticky;
+    top: calc(var(--header-h) + var(--thead-h));
+    z-index: 6;
   }
+  tr.day-divider.today td { color: #60a5fa; }
 
   .status {
     text-align: center;
@@ -121,7 +142,7 @@
       <col class="c-hour"><col class="c-temp"><col class="c-sky"><col class="c-rain"><col class="c-wind">
     </colgroup>
     <thead>
-      <tr><th>Hour</th><th>°C</th><th>Sky</th><th>mm</th><th>Wind</th></tr>
+      <tr><th>Hour</th><th id="tempHeader" class="tap" onclick="toggleTempUnit()" aria-label="Toggle temperature units">Temp · °C</th><th>Sky</th><th>mm</th><th>Wind</th></tr>
     </thead>
     <tbody id="rows"></tbody>
   </table>
@@ -364,19 +385,36 @@ function hourBand(date) {
     : `${num(start)}${ap(start)}–${num(end)}${ap(end)}`;
 }
 
-function dayDividerLabel(date) {
-  const wk = date.toLocaleDateString('en-US', {weekday: 'long'});
-  const md = date.toLocaleDateString('en-US', {month: 'short', day: 'numeric'});
-  return `${wk.toUpperCase()} · ${md.toUpperCase()}`;
+function dayDividerLabel(date, isToday) {
+  const md = date.toLocaleDateString('en-US', {month: 'short', day: 'numeric'}).toUpperCase();
+  if (isToday) return `TODAY · ${md}`;
+  const wk = date.toLocaleDateString('en-US', {weekday: 'long'}).toUpperCase();
+  return `${wk} · ${md}`;
+}
+
+/* ===================== Temp unit ===================== */
+let tempUnit = (typeof localStorage !== 'undefined' && localStorage.getItem('tempUnit')) || 'C';
+function tempDisplay(c)   { return tempUnit === 'F' ? Math.round(c * 9/5 + 32) : Math.round(c); }
+function updateTempHeader() {
+  const el = document.getElementById('tempHeader');
+  if (el) el.textContent = `Temp · °${tempUnit}`;
+}
+function toggleTempUnit() {
+  tempUnit = tempUnit === 'C' ? 'F' : 'C';
+  try { localStorage.setItem('tempUnit', tempUnit); } catch (e) {}
+  updateTempHeader();
+  if (lastData) render(lastData);
 }
 
 /* ===================== Render ===================== */
+let lastData = null;        // cached so toggling temp unit doesn't re-fetch
+
 async function refresh() {
   try {
     const res = await fetch(API_URL);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const data = await res.json();
-    render(data);
+    lastData = await res.json();
+    render(lastData);
     updateHeader();
   } catch (err) {
     const s = document.getElementById('status');
@@ -413,6 +451,7 @@ function render(data) {
   const now = new Date();
   const currentHourStart = new Date(now.getFullYear(), now.getMonth(), now.getDate(), now.getHours(), 0, 0);
 
+  const todayKey = now.toDateString();
   let rowsShown = 0;
   let prevDateKey = null;
   for (let i = 0; i < times.length; i++) {
@@ -422,12 +461,13 @@ function render(data) {
         pr[i] == null || ws[i] == null || wd[i] == null) continue;
 
     const dateKey = ts.toDateString();
-    if (prevDateKey !== null && dateKey !== prevDateKey) {
+    if (dateKey !== prevDateKey) {
+      const isToday = dateKey === todayKey;
       const divider = document.createElement('tr');
-      divider.className = 'day-divider';
+      divider.className = isToday ? 'day-divider today' : 'day-divider';
       const cell = document.createElement('td');
       cell.colSpan = 5;
-      cell.textContent = dayDividerLabel(ts);
+      cell.textContent = dayDividerLabel(ts, isToday);
       divider.appendChild(cell);
       tbody.appendChild(divider);
     }
@@ -443,7 +483,7 @@ function render(data) {
     if (rowsShown === 0) tr.className = 'now';
     tr.innerHTML =
       `<td class="cell-hour">${hourBand(ts)}</td>` +
-      `<td class="cell-temp">${Math.round(temp[i])}</td>` +
+      `<td class="cell-temp">${tempDisplay(temp[i])}</td>` +
       `<td class="cell-sky">${ICONS[iconKey]}</td>` +
       `<td class="cell-rain ${rb==='dry'?'dry':''}">${pr[i].toFixed(1)}</td>` +
       `<td class="cell-wind">${windIcon(wd[i], Math.round(ws[i]))}</td>`;
@@ -462,6 +502,7 @@ function render(data) {
 }
 
 /* ===================== Boot ===================== */
+updateTempHeader();   // reflect persisted unit on first paint
 refresh();
 setInterval(refresh, REFRESH_MS);
 document.addEventListener('visibilitychange', () => {
