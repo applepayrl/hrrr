@@ -95,8 +95,10 @@
   .cell-temp { font-size: 24px; font-weight: 700; line-height: 1; }
   .cell-sky  { padding: 6px 2px; }
   .cell-sky svg { width: 40px; height: 40px; display: inline-block; vertical-align: middle; overflow: visible; }
-  .cell-rain { font-size: 14px; color: #38bdf8; font-variant-numeric: tabular-nums; }
-  .cell-rain.dry { color: #475569; }
+  .cell-rain { font-variant-numeric: tabular-nums; line-height: 1.1; padding: 6px 2px; }
+  .cell-rain > div { font-size: 13px; min-height: 16px; }
+  .rain-hrrr { color: #38bdf8; }
+  .rain-gfs  { color: #22c55e; }
   .cell-wind { padding: 4px 2px; }
   .cell-wind svg { width: 48px; height: 48px; display: inline-block; vertical-align: middle; }
 
@@ -154,13 +156,21 @@
 const COORDS = { lat: 40.7644, lon: -73.9594 };    // zip 10065 (UES)
 const MANHATTAN_OFFSET = 29;                        // degrees E of true N
 const REFRESH_MS = 15 * 60 * 1000;                  // 15 min
-const API_URL =
-  'https://api.open-meteo.com/v1/forecast' +
-  `?latitude=${COORDS.lat}&longitude=${COORDS.lon}` +
-  '&models=gfs_hrrr' +
-  '&hourly=temperature_2m,cloud_cover_low,cloud_cover_mid,cloud_cover_high,precipitation,weather_code,wind_speed_10m,wind_direction_10m,is_day' +
-  '&temperature_unit=celsius&wind_speed_unit=mph&precipitation_unit=mm' +
-  '&timezone=America/New_York&forecast_hours=48';
+function buildUrl(model, hourly) {
+  return 'https://api.open-meteo.com/v1/forecast' +
+    `?latitude=${COORDS.lat}&longitude=${COORDS.lon}` +
+    `&models=${model}&hourly=${hourly.join(',')}` +
+    '&temperature_unit=celsius&wind_speed_unit=mph&precipitation_unit=mm' +
+    '&timezone=America/New_York&forecast_hours=48';
+}
+const HRRR_URL = buildUrl('gfs_hrrr', [
+  'temperature_2m','cloud_cover_low','cloud_cover_mid','cloud_cover_high',
+  'precipitation','weather_code','wind_speed_10m','wind_direction_10m','is_day'
+]);
+// gfs_global is a fully independent model (GFS 0.25°, no HRRR blend) — shown
+// as a second-opinion against HRRR's convection-allowing spikes.
+const GFS_URL = buildUrl('gfs_global', ['precipitation']);
+const PRECIP_MIN = 0.1;  // mm: anything below renders as nothing (avoid 0.0 clutter)
 
 /* ===================== Cloud palette ===================== */
 /* light → white front → medium (snow) → dark (overcast/storm) */
@@ -374,6 +384,18 @@ function windIcon(fromDeg, mph) {
 }
 
 /* ===================== Time ===================== */
+/* Two-line rain cell: HRRR (cyan) on top, GFS (green) below.
+   Both empty → cell stays empty (no clutter).
+   One present, one zero → empty slot still occupies its vertical position
+   so the value that IS shown stays in its expected row (top or bottom). */
+function rainCell(hrrr, gfs) {
+  const showH = hrrr != null && hrrr >= PRECIP_MIN;
+  const showG = gfs  != null && gfs  >= PRECIP_MIN;
+  if (!showH && !showG) return '';
+  return `<div class="rain-hrrr">${showH ? hrrr.toFixed(1) : ''}</div>` +
+         `<div class="rain-gfs">${showG ? gfs.toFixed(1)  : ''}</div>`;
+}
+
 function hourBand(date) {
   const start = date.getHours();
   const end   = (start + 1) % 24;
@@ -411,9 +433,14 @@ let lastData = null;        // cached so toggling temp unit doesn't re-fetch
 
 async function refresh() {
   try {
-    const res = await fetch(API_URL);
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    lastData = await res.json();
+    const [hRes, gRes] = await Promise.all([fetch(HRRR_URL), fetch(GFS_URL)]);
+    if (!hRes.ok) throw new Error(`HRRR HTTP ${hRes.status}`);
+    if (!gRes.ok) throw new Error(`GFS HTTP ${gRes.status}`);
+    const [hrrr, gfs] = await Promise.all([hRes.json(), gRes.json()]);
+    // Index GFS precip by time string so we can align with each HRRR row
+    const gfsPrecip = {};
+    gfs.hourly.time.forEach((t, i) => { gfsPrecip[t] = gfs.hourly.precipitation[i]; });
+    lastData = { hrrr, gfsPrecip };
     render(lastData);
     updateHeader();
   } catch (err) {
@@ -437,16 +464,18 @@ function render(data) {
   const status = document.getElementById('status');
 
   tbody.innerHTML = '';
-  const times = data.hourly.time;
-  const temp  = data.hourly.temperature_2m;
-  const ccL   = data.hourly.cloud_cover_low;
-  const ccM   = data.hourly.cloud_cover_mid;
-  const ccH   = data.hourly.cloud_cover_high;
-  const pr    = data.hourly.precipitation;
-  const wc    = data.hourly.weather_code;
-  const ws    = data.hourly.wind_speed_10m;
-  const wd    = data.hourly.wind_direction_10m;
-  const day   = data.hourly.is_day;
+  const h     = data.hrrr.hourly;
+  const times = h.time;
+  const temp  = h.temperature_2m;
+  const ccL   = h.cloud_cover_low;
+  const ccM   = h.cloud_cover_mid;
+  const ccH   = h.cloud_cover_high;
+  const pr    = h.precipitation;
+  const wc    = h.weather_code;
+  const ws    = h.wind_speed_10m;
+  const wd    = h.wind_direction_10m;
+  const day   = h.is_day;
+  const gfsPrecip = data.gfsPrecip || {};
 
   const now = new Date();
   const currentHourStart = new Date(now.getFullYear(), now.getMonth(), now.getDate(), now.getHours(), 0, 0);
@@ -485,7 +514,7 @@ function render(data) {
       `<td class="cell-hour">${hourBand(ts)}</td>` +
       `<td class="cell-temp">${tempDisplay(temp[i])}</td>` +
       `<td class="cell-sky">${ICONS[iconKey]}</td>` +
-      `<td class="cell-rain ${rb==='dry'?'dry':''}">${pr[i].toFixed(1)}</td>` +
+      `<td class="cell-rain">${rainCell(pr[i], gfsPrecip[times[i]])}</td>` +
       `<td class="cell-wind">${windIcon(wd[i], Math.round(ws[i]))}</td>`;
     tbody.appendChild(tr);
     rowsShown++;
