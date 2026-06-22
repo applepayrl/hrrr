@@ -109,13 +109,14 @@
   #rainInfo {
     position: fixed;
     top: calc(env(safe-area-inset-top) + 64px);
-    left: 50%;
-    transform: translateX(-50%);
+    /* Left-anchored so it sits over the hour/temp columns — clear of a thumb
+       pressing the rainfall number (center-right), even on the top rows. */
+    left: 10px;
     background: #16213d;
     border: 1px solid rgba(255,255,255,0.18);
     border-radius: 12px;
-    padding: 10px 18px;
-    font-size: 15px;
+    padding: 9px 14px;
+    font-size: 14px;
     font-variant-numeric: tabular-nums;
     line-height: 1.4;
     text-align: left;
@@ -467,11 +468,18 @@ function ensemble(members) {
   if (have.length >= 3) {
     const s = [...have].sort((a, b) => a - b);
     const top = s[s.length - 1], second = s[s.length - 2];
-    if (top > 2 * second + 1.0) {                 // outlier → drop it
+    if (top > 2 * second + 1.0) {                 // wild outlier → drop it
       const rest = s.slice(0, -1);
       val = rest.reduce((p, x) => p + x, 0) / rest.length;
     }
   }
+  // Dry consensus: if only a 1–2 model minority shows rain — and none of them a
+  // substantial amount — treat the hour as dry. Kills the light drizzle a couple
+  // of models tend to overstate when the majority say it's dry. (A substantial
+  // minority signal ≥ 8 mm is kept and flagged, so real events still surface.)
+  const wet = have.filter(v => v >= 0.5).length;
+  if (wet <= 2 && wet * 2 < have.length && Math.max(...have) < 8) val = 0;
+
   const sd = Math.sqrt(have.reduce((p, x) => p + (x - mean) ** 2, 0) / have.length);
   const spread = mean > 0.2 ? sd / mean : 0;      // CV; undefined for ~dry
   return { val, spread, members };
@@ -481,7 +489,8 @@ function ensemble(members) {
    getting more intense with ensemble spread. Calm cyan for trivial amounts. */
 function spreadColor(spread, val) {
   if (val < 2.5) return 'rgb(56,165,248)';        // cyan — not worth flagging
-  const t = Math.max(0, Math.min(1, (spread - 0.35) / (1.05 - 0.35)));
+  // More sensitive: reaches full green by spread 0.7 (was 1.05).
+  const t = Math.max(0, Math.min(1, (spread - 0.18) / (0.70 - 0.18)));
   const c0 = [56, 165, 248], c1 = [34, 197, 94];  // #38bdf8 → #22c55e
   const c = c0.map((v, i) => Math.round(v + (c1[i] - v) * t));
   return `rgb(${c[0]},${c[1]},${c[2]})`;
@@ -656,15 +665,17 @@ function render(data) {
 (function () {
   const rows = document.getElementById('rows');
   const box  = document.getElementById('rainInfo');
-  let timer = null;
+  let timer = null, sx = 0, sy = 0;
+  const MOVE_TOL = 28;   // px of finger wander allowed before dismissing
 
+  function pt(e) { return (e.touches && e.touches[0]) || (e.changedTouches && e.changedTouches[0]) || e; }
   function show(td) {
     // data-ens = "HRRR 2.5|GFS 1.2|JMA 0.0|..." ; data-val = blended result
-    const rows = td.dataset.ens.split('|').map(p => {
+    const lines = td.dataset.ens.split('|').map(p => {
       const i = p.lastIndexOf(' ');
       return `<div><b>${p.slice(0, i)}</b><span>${p.slice(i + 1)}</span></div>`;
     }).join('');
-    box.innerHTML = `<div class="ri-grid">${rows}</div>` +
+    box.innerHTML = `<div class="ri-grid">${lines}</div>` +
       `<div class="ri-blend"><b>Blend</b><span>${td.dataset.val} mm</span></div>`;
     box.style.display = 'block';
   }
@@ -675,14 +686,20 @@ function render(data) {
   function start(e) {
     const td = e.target.closest('.cell-rain');
     if (!td || td.dataset.ens == null) return;   // empty (dry) cells carry no data
+    const p = pt(e); sx = p.clientX; sy = p.clientY;
     clearTimeout(timer);
     timer = setTimeout(() => show(td), 350);     // long-press threshold
+  }
+  function move(e) {
+    const p = pt(e);
+    // Only dismiss on a real drag/scroll; ignore the small wander of a held thumb.
+    if (Math.hypot(p.clientX - sx, p.clientY - sy) > MOVE_TOL) hide();
   }
 
   rows.addEventListener('touchstart', start, { passive: true });
   rows.addEventListener('touchend',   hide,  { passive: true });
   rows.addEventListener('touchcancel',hide,  { passive: true });
-  rows.addEventListener('touchmove',  hide,  { passive: true });
+  rows.addEventListener('touchmove',  move,  { passive: true });
   // Desktop fallback for testing: press-and-hold with the mouse.
   rows.addEventListener('mousedown',  start);
   rows.addEventListener('mouseup',    hide);
