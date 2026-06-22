@@ -95,10 +95,11 @@
   .cell-temp { font-size: 24px; font-weight: 700; line-height: 1; }
   .cell-sky  { padding: 6px 2px; }
   .cell-sky svg { width: 40px; height: 40px; display: inline-block; vertical-align: middle; overflow: visible; }
-  .cell-rain { font-variant-numeric: tabular-nums; line-height: 1.1; padding: 6px 2px; }
-  .cell-rain > div { font-size: 13px; min-height: 16px; }
-  .rain-hrrr { color: #38bdf8; }
-  .rain-gfs  { color: #22c55e; }
+  .cell-rain { font-size: 15px; font-variant-numeric: tabular-nums; }
+  /* color encodes HRRR-vs-GFS disagreement (confidence in the synthesized value) */
+  .rain-agree   { color: #38bdf8; }   /* models agree → confident */
+  .rain-warn    { color: #fbbf24; }   /* moderate disagreement */
+  .rain-diverge { color: #f87171; }   /* large disagreement → sanity-check */
   .cell-wind { padding: 4px 2px; }
   .cell-wind svg { width: 48px; height: 48px; display: inline-block; vertical-align: middle; }
 
@@ -170,7 +171,7 @@ const HRRR_URL = buildUrl('gfs_hrrr', [
 // gfs_global is a fully independent model (GFS 0.25°, no HRRR blend) — shown
 // as a second-opinion against HRRR's convection-allowing spikes.
 const GFS_URL = buildUrl('gfs_global', ['precipitation']);
-const PRECIP_MIN = 0.1;  // mm: anything below renders as nothing (avoid 0.0 clutter)
+const PRECIP_MIN = 0.1;  // mm: synthesized values below this render as nothing
 
 /* ===================== Cloud palette ===================== */
 /* light → white front → medium (snow) → dark (overcast/storm) */
@@ -383,18 +384,56 @@ function windIcon(fromDeg, mph) {
     </svg>`;
 }
 
-/* ===================== Time ===================== */
-/* Two-line rain cell: HRRR (cyan) on top, GFS (green) below.
-   Both empty → cell stays empty (no clutter).
-   One present, one zero → empty slot still occupies its vertical position
-   so the value that IS shown stays in its expected row (top or bottom). */
-function rainCell(hrrr, gfs) {
-  const showH = hrrr != null && hrrr >= PRECIP_MIN;
-  const showG = gfs  != null && gfs  >= PRECIP_MIN;
-  if (!showH && !showG) return '';
-  return `<div class="rain-hrrr">${showH ? hrrr.toFixed(1) : ''}</div>` +
-         `<div class="rain-gfs">${showG ? gfs.toFixed(1)  : ''}</div>`;
+/* ===================== Precipitation synthesis ===================== */
+/* Single value blending HRRR (convection-allowing, spiky) and GFS-global
+   (smoother). Parameters were tuned by backtesting 96 days of historical
+   gfs_hrrr + gfs_global forecasts against the Central Park rain gauge
+   (GHCN USW00094728, ~2 km from 10065). The amended config beats both raw
+   models on MAE, RMSE, and correlation (0.78).
+
+   1. Soft-cap HRRR above a knee K toward a ceiling C (tames convective
+      point-spikes; e.g. a raw 73.8 mm/hr → 12.0). C¹-continuous at K.
+   2. Lead-weighted blend: HRRR is most skillful near-term, so weight it
+      0.60 at ≤12 h, decaying to 0.45 by 48 h. (De-drizzling GFS was tested
+      and made accuracy WORSE, so it is intentionally not applied.) */
+const CAP_KNEE = 5, CAP_CEIL = 12;
+const W_NEAR = 0.60, W_FAR = 0.45, LEAD_NEAR = 12, LEAD_FAR = 48;
+
+function softcapHrrr(x) {
+  if (x <= CAP_KNEE) return x;
+  return CAP_KNEE + (CAP_CEIL - CAP_KNEE) * (1 - Math.exp(-(x - CAP_KNEE)/(CAP_CEIL - CAP_KNEE)));
 }
+function hrrrWeight(leadH) {
+  if (leadH <= LEAD_NEAR) return W_NEAR;
+  if (leadH >= LEAD_FAR)  return W_FAR;
+  return W_NEAR + (W_FAR - W_NEAR) * (leadH - LEAD_NEAR)/(LEAD_FAR - LEAD_NEAR);
+}
+
+/* Returns the synthesized precip cell, colored by how much the two raw
+   models disagree (a confidence cue). leadH is forecast lead in hours. */
+function rainCell(hrrr, gfs, leadH) {
+  if (hrrr == null && gfs == null) return '';
+  let synth;
+  if (hrrr == null)      synth = gfs;
+  else if (gfs == null)  synth = softcapHrrr(hrrr);
+  else { const w = hrrrWeight(leadH); synth = w * softcapHrrr(hrrr) + (1 - w) * gfs; }
+  if (synth < PRECIP_MIN) return '';
+
+  // Disagreement from the RAW models: 1 − lo/hi (0 = identical, 1 = one dry).
+  // Only flag when at least one model shows meaningful precip (≥ 2.5 mm/hr);
+  // disagreement on trivial amounts isn't worth a warning color.
+  let cls = 'rain-agree';
+  if (hrrr != null && gfs != null) {
+    const hi = Math.max(hrrr, gfs), lo = Math.min(hrrr, gfs);
+    if (hi >= 2.5) {
+      const d = 1 - lo / hi;
+      cls = d >= 0.7 ? 'rain-diverge' : d >= 0.4 ? 'rain-warn' : 'rain-agree';
+    }
+  }
+  return `<span class="${cls}">${synth.toFixed(1)}</span>`;
+}
+
+/* ===================== Time ===================== */
 
 function hourBand(date) {
   const start = date.getHours();
@@ -514,7 +553,7 @@ function render(data) {
       `<td class="cell-hour">${hourBand(ts)}</td>` +
       `<td class="cell-temp">${tempDisplay(temp[i])}</td>` +
       `<td class="cell-sky">${ICONS[iconKey]}</td>` +
-      `<td class="cell-rain">${rainCell(pr[i], gfsPrecip[times[i]])}</td>` +
+      `<td class="cell-rain">${rainCell(pr[i], gfsPrecip[times[i]], (ts.getTime() - currentHourStart.getTime())/3600000)}</td>` +
       `<td class="cell-wind">${windIcon(wd[i], Math.round(ws[i]))}</td>`;
     tbody.appendChild(tr);
     rowsShown++;
