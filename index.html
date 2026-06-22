@@ -95,11 +95,40 @@
   .cell-temp { font-size: 24px; font-weight: 700; line-height: 1; }
   .cell-sky  { padding: 6px 2px; }
   .cell-sky svg { width: 40px; height: 40px; display: inline-block; vertical-align: middle; overflow: visible; }
-  .cell-rain { font-size: 15px; font-variant-numeric: tabular-nums; }
-  /* color encodes HRRR-vs-GFS disagreement (confidence in the synthesized value) */
-  .rain-agree   { color: #38bdf8; }   /* models agree → confident */
-  .rain-warn    { color: #fbbf24; }   /* moderate disagreement */
-  .rain-diverge { color: #f87171; }   /* large disagreement → sanity-check */
+  .cell-rain {
+    font-size: 15px;
+    font-variant-numeric: tabular-nums;
+    -webkit-touch-callout: none;   /* suppress iOS callout on long-press */
+    -webkit-user-select: none;
+    user-select: none;
+  }
+  /* color encodes HRRR-vs-GFS disagreement (a confidence cue) */
+  .rain-agree    { color: #38bdf8; }   /* models agree → cyan */
+  .rain-disagree { color: #22c55e; }   /* models disagree → green */
+
+  /* Long-press readout: pinned top-center, far from a thumb on a table row */
+  #rainInfo {
+    position: fixed;
+    top: calc(env(safe-area-inset-top) + 64px);
+    left: 50%;
+    transform: translateX(-50%);
+    background: #16213d;
+    border: 1px solid rgba(255,255,255,0.18);
+    border-radius: 12px;
+    padding: 10px 18px;
+    font-size: 15px;
+    font-variant-numeric: tabular-nums;
+    line-height: 1.4;
+    text-align: left;
+    box-shadow: 0 10px 30px rgba(0,0,0,0.6);
+    z-index: 50;
+    display: none;
+    pointer-events: none;
+    white-space: nowrap;
+  }
+  #rainInfo .ri-h { color: #38bdf8; }
+  #rainInfo .ri-g { color: #22c55e; }
+  #rainInfo b { font-weight: 700; }
   .cell-wind { padding: 4px 2px; }
   .cell-wind svg { width: 48px; height: 48px; display: inline-block; vertical-align: middle; }
 
@@ -151,6 +180,8 @@
   </table>
   <div class="status" id="status">Loading HRRR forecast…</div>
 </main>
+
+<div id="rainInfo"></div>
 
 <script>
 /* ===================== Config ===================== */
@@ -338,12 +369,18 @@ function rainBand(mm) {
   return 'heavy';
 }
 function pickIcon(cb, rb, isDay, wcode) {
-  // Special weather codes take precedence over cloud + rain logic
-  if (wcode === 45 || wcode === 48) return 'fog';                    // fog / freezing fog
-  if (wcode === 95 || wcode === 96 || wcode === 99) return 'thunderstorm';
-  if (wcode === 75 || wcode === 86) return 'snow-heavy';             // heavy snow / heavy snow showers
-  if (wcode === 73) return 'snow-mod';                               // moderate snow
-  if (wcode === 71 || wcode === 77 || wcode === 85) return 'snow-light'; // slight snow, grains, slight showers
+  // Fog is a sky state independent of precip amount.
+  if (wcode === 45 || wcode === 48) return 'fog';
+
+  // Precip-TYPE overrides (snow / thunder) only apply when the synthesized
+  // value is actually wet, so the icon agrees with the rainfall column.
+  // Intensity follows the synthesized rain band, not the raw HRRR amount.
+  if (rb !== 'dry') {
+    if (wcode === 95 || wcode === 96 || wcode === 99) return 'thunderstorm';
+    if (wcode === 71 || wcode === 73 || wcode === 75 ||
+        wcode === 77 || wcode === 85 || wcode === 86)
+      return rb === 'light' ? 'snow-light' : rb === 'moderate' ? 'snow-mod' : 'snow-heavy';
+  }
 
   if (rb === 'dry') {
     if (cb === 'clear')    return isDay ? 'clear-day'   : 'clear-night';
@@ -386,18 +423,23 @@ function windIcon(fromDeg, mph) {
 
 /* ===================== Precipitation synthesis ===================== */
 /* Single value blending HRRR (convection-allowing, spiky) and GFS-global
-   (smoother). Parameters were tuned by backtesting 96 days of historical
-   gfs_hrrr + gfs_global forecasts against the Central Park rain gauge
-   (GHCN USW00094728, ~2 km from 10065). The amended config beats both raw
-   models on MAE, RMSE, and correlation (0.78).
+   (smoother). Parameters were tuned by backtesting a FULL YEAR (365 days,
+   121 wet) of historical gfs_hrrr + gfs_global forecasts against the Central
+   Park rain gauge (GHCN USW00094728, ~2 km from 10065). The config below
+   beats both raw models on MAE, RMSE and correlation (0.79 vs 0.66 HRRR /
+   0.70 GFS).
 
-   1. Soft-cap HRRR above a knee K toward a ceiling C (tames convective
+   1. Gate GFS drizzle: GFS < 0.5 mm/hr is set to 0 UNLESS HRRR also shows
+      precip. GFS over-reports light drizzle you don't really feel on the
+      street; gating it (only when HRRR corroborates dryness) also slightly
+      improved full-year gauge accuracy.
+   2. Soft-cap HRRR above a knee K toward a ceiling C (tames convective
       point-spikes; e.g. a raw 73.8 mm/hr → 12.0). C¹-continuous at K.
-   2. Lead-weighted blend: HRRR is most skillful near-term, so weight it
-      0.60 at ≤12 h, decaying to 0.45 by 48 h. (De-drizzling GFS was tested
-      and made accuracy WORSE, so it is intentionally not applied.) */
-const CAP_KNEE = 5, CAP_CEIL = 12;
-const W_NEAR = 0.60, W_FAR = 0.45, LEAD_NEAR = 12, LEAD_FAR = 48;
+   3. Lead-weighted blend: HRRR is most skillful near-term, so weight it
+      0.75 at ≤12 h, decaying to 0.60 by 48 h. */
+const CAP_KNEE = 10, CAP_CEIL = 12;
+const W_NEAR = 0.75, W_FAR = 0.60, LEAD_NEAR = 12, LEAD_FAR = 48;
+const GFS_DRIZZLE = 0.5;   // mm/hr: GFS below this is gated out unless HRRR is wet
 
 function softcapHrrr(x) {
   if (x <= CAP_KNEE) return x;
@@ -408,29 +450,38 @@ function hrrrWeight(leadH) {
   if (leadH >= LEAD_FAR)  return W_FAR;
   return W_NEAR + (W_FAR - W_NEAR) * (leadH - LEAD_NEAR)/(LEAD_FAR - LEAD_NEAR);
 }
+function gateGfs(hrrr, gfs) {
+  if (gfs == null) return 0;
+  if (gfs < GFS_DRIZZLE && (hrrr == null || hrrr < PRECIP_MIN)) return 0;
+  return gfs;
+}
 
-/* Returns the synthesized precip cell, colored by how much the two raw
-   models disagree (a confidence cue). leadH is forecast lead in hours. */
-function rainCell(hrrr, gfs, leadH) {
-  if (hrrr == null && gfs == null) return '';
-  let synth;
-  if (hrrr == null)      synth = gfs;
-  else if (gfs == null)  synth = softcapHrrr(hrrr);
-  else { const w = hrrrWeight(leadH); synth = w * softcapHrrr(hrrr) + (1 - w) * gfs; }
-  if (synth < PRECIP_MIN) return '';
+/* The synthesized precipitation value (mm/hr) for one hour. */
+function synthPrecip(hrrr, gfs, leadH) {
+  if (hrrr == null && gfs == null) return 0;
+  const g = gateGfs(hrrr, gfs);
+  if (hrrr == null) return g;
+  if (gfs == null)  return softcapHrrr(hrrr);
+  const w = hrrrWeight(leadH);
+  return w * softcapHrrr(hrrr) + (1 - w) * g;
+}
 
-  // Disagreement from the RAW models: 1 − lo/hi (0 = identical, 1 = one dry).
-  // Only flag when at least one model shows meaningful precip (≥ 2.5 mm/hr);
-  // disagreement on trivial amounts isn't worth a warning color.
+/* Renders the precip cell <td> from a precomputed synth value, colored by
+   how much the two RAW models disagree, and carrying data-* with the raw
+   values for the long-press readout. */
+function rainTd(synth, hrrr, gfs) {
+  const dh = hrrr == null ? '—' : hrrr.toFixed(1);
+  const dg = gfs  == null ? '—' : gfs.toFixed(1);
+  if (synth < PRECIP_MIN)
+    return `<td class="cell-rain"></td>`;
+  // Disagreement from RAW models: 1 − lo/hi, only when ≥ 2.5 mm/hr is in play.
   let cls = 'rain-agree';
   if (hrrr != null && gfs != null) {
     const hi = Math.max(hrrr, gfs), lo = Math.min(hrrr, gfs);
-    if (hi >= 2.5) {
-      const d = 1 - lo / hi;
-      cls = d >= 0.7 ? 'rain-diverge' : d >= 0.4 ? 'rain-warn' : 'rain-agree';
-    }
+    if (hi >= 2.5 && (1 - lo / hi) >= 0.5) cls = 'rain-disagree';
   }
-  return `<span class="${cls}">${synth.toFixed(1)}</span>`;
+  return `<td class="cell-rain" data-h="${dh}" data-g="${dg}">` +
+         `<span class="${cls}">${synth.toFixed(1)}</span></td>`;
 }
 
 /* ===================== Time ===================== */
@@ -541,9 +592,15 @@ function render(data) {
     }
     prevDateKey = dateKey;
 
+    // Synthesized precip drives BOTH the rainfall cell and the icon's rain,
+    // so the icon always agrees with the number shown in the column.
+    const leadH  = (ts.getTime() - currentHourStart.getTime()) / 3600000;
+    const gfsVal = gfsPrecip[times[i]];
+    const synth  = synthPrecip(pr[i], gfsVal, leadH);
+
     const eff = effectiveCloud(ccL[i], ccM[i], ccH[i], pr[i], wc[i]);
     const cb = cloudBand(eff);
-    const rb = rainBand(pr[i]);
+    const rb = rainBand(synth);
     const isDay = day[i] === 1;
     const iconKey = pickIcon(cb, rb, isDay, wc[i]);
 
@@ -553,7 +610,7 @@ function render(data) {
       `<td class="cell-hour">${hourBand(ts)}</td>` +
       `<td class="cell-temp">${tempDisplay(temp[i])}</td>` +
       `<td class="cell-sky">${ICONS[iconKey]}</td>` +
-      `<td class="cell-rain">${rainCell(pr[i], gfsPrecip[times[i]], (ts.getTime() - currentHourStart.getTime())/3600000)}</td>` +
+      rainTd(synth, pr[i], gfsVal) +
       `<td class="cell-wind">${windIcon(wd[i], Math.round(ws[i]))}</td>`;
     tbody.appendChild(tr);
     rowsShown++;
@@ -568,6 +625,43 @@ function render(data) {
     table.style.display = '';
   }
 }
+
+/* ===================== Long-press rain readout ===================== */
+/* Hold a rain cell to reveal the raw HRRR & GFS values behind the synthesis.
+   The box is pinned top-center (far from a thumb pressing a table row) and
+   vanishes the instant the finger lifts. Delegated to #rows so it survives
+   re-renders. */
+(function () {
+  const rows = document.getElementById('rows');
+  const box  = document.getElementById('rainInfo');
+  let timer = null;
+
+  function show(td) {
+    box.innerHTML =
+      `<div><b class="ri-h">HRRR:</b> ${td.dataset.h} mm</div>` +
+      `<div><b class="ri-g">GFS:</b> ${td.dataset.g} mm</div>`;
+    box.style.display = 'block';
+  }
+  function hide() {
+    clearTimeout(timer);
+    box.style.display = 'none';
+  }
+  function start(e) {
+    const td = e.target.closest('.cell-rain');
+    if (!td || td.dataset.h == null) return;   // empty (dry) cells carry no data-*
+    clearTimeout(timer);
+    timer = setTimeout(() => show(td), 350);   // long-press threshold
+  }
+
+  rows.addEventListener('touchstart', start, { passive: true });
+  rows.addEventListener('touchend',   hide,  { passive: true });
+  rows.addEventListener('touchcancel',hide,  { passive: true });
+  rows.addEventListener('touchmove',  hide,  { passive: true });
+  // Desktop fallback for testing: press-and-hold with the mouse.
+  rows.addEventListener('mousedown',  start);
+  rows.addEventListener('mouseup',    hide);
+  rows.addEventListener('mouseleave', hide);
+})();
 
 /* ===================== Boot ===================== */
 updateTempHeader();   // reflect persisted unit on first paint
