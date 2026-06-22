@@ -499,11 +499,15 @@ function spreadColor(spread, val) {
 /* Renders the precip cell <td> from an ensemble result, colored by spread and
    carrying the per-model breakdown for the long-press readout. */
 function rainTd(ens) {
-  if (ens == null || ens.val < PRECIP_MIN) return `<td class="cell-rain"></td>`;
+  if (ens == null) return `<td class="cell-rain"></td>`;   // no model data at all
   const data = ens.members
     .map(m => `${m.name} ${m.v == null ? '—' : m.v.toFixed(1)}`).join('|');
+  const attrs = `data-ens="${data}" data-val="${ens.val.toFixed(1)}"`;
+  // Dry hours show no number but stay long-pressable, so all 6 model outputs
+  // are still inspectable even when the blend rounds to nothing.
+  if (ens.val < PRECIP_MIN) return `<td class="cell-rain" ${attrs}></td>`;
   const color = spreadColor(ens.spread, ens.val);
-  return `<td class="cell-rain" data-ens="${data}" data-val="${ens.val.toFixed(1)}">` +
+  return `<td class="cell-rain" ${attrs}>` +
          `<span style="color:${color}">${ens.val.toFixed(1)}</span></td>`;
 }
 
