@@ -102,9 +102,8 @@
     -webkit-user-select: none;
     user-select: none;
   }
-  /* color encodes HRRR-vs-GFS disagreement (a confidence cue) */
-  .rain-agree    { color: #38bdf8; }   /* models agree → cyan */
-  .rain-disagree { color: #22c55e; }   /* models disagree → green */
+  /* Rain number color is set inline per-cell: cyan (ensemble agrees) →
+     green (wide ensemble spread). See spreadColor() in script. */
 
   /* Long-press readout: pinned top-center, far from a thumb on a table row */
   #rainInfo {
@@ -126,9 +125,20 @@
     pointer-events: none;
     white-space: nowrap;
   }
-  #rainInfo .ri-h { color: #38bdf8; }
-  #rainInfo .ri-g { color: #22c55e; }
-  #rainInfo b { font-weight: 700; }
+  #rainInfo .ri-grid > div, #rainInfo .ri-blend {
+    display: flex;
+    justify-content: space-between;
+    gap: 18px;
+  }
+  #rainInfo b { font-weight: 600; color: #8aa0bf; }
+  #rainInfo span { color: #e6edf7; }
+  #rainInfo .ri-blend {
+    margin-top: 6px;
+    padding-top: 6px;
+    border-top: 1px solid rgba(255,255,255,0.15);
+  }
+  #rainInfo .ri-blend b { color: #cbd5e1; }
+  #rainInfo .ri-blend span { color: #38bdf8; font-weight: 700; }
   .cell-wind { padding: 4px 2px; }
   .cell-wind svg { width: 48px; height: 48px; display: inline-block; vertical-align: middle; }
 
@@ -199,10 +209,19 @@ const HRRR_URL = buildUrl('gfs_hrrr', [
   'temperature_2m','cloud_cover_low','cloud_cover_mid','cloud_cover_high',
   'precipitation','weather_code','wind_speed_10m','wind_direction_10m','is_day'
 ]);
-// gfs_global is a fully independent model (GFS 0.25°, no HRRR blend) — shown
-// as a second-opinion against HRRR's convection-allowing spikes.
-const GFS_URL = buildUrl('gfs_global', ['precipitation']);
-const PRECIP_MIN = 0.1;  // mm: synthesized values below this render as nothing
+// Precip ensemble: 5 independent globals fetched in one request; combined with
+// HRRR (above) into a 6-model outlier-rejected mean. Backtested over 2–5 yrs vs
+// the Central Park gauge — beats every 2-model approach on typical AND extreme
+// days, and catches floods HRRR+GFS both miss. (GraphCast omitted: null live.)
+const ENS_MODELS = [
+  {id: 'gfs_global',   name: 'GFS'},
+  {id: 'jma_gsm',      name: 'JMA'},
+  {id: 'ecmwf_ifs025', name: 'ECMWF'},
+  {id: 'icon_global',  name: 'ICON'},
+  {id: 'gem_global',   name: 'GEM'},
+];
+const ENS_URL = buildUrl(ENS_MODELS.map(m => m.id).join(','), ['precipitation']);
+const PRECIP_MIN = 0.1;  // mm: ensemble values below this render as nothing
 
 /* ===================== Cloud palette ===================== */
 /* light → white front → medium (snow) → dark (overcast/storm) */
@@ -429,59 +448,54 @@ function windIcon(fromDeg, mph) {
    beats both raw models on MAE, RMSE and correlation (0.79 vs 0.66 HRRR /
    0.70 GFS).
 
-   1. Gate GFS drizzle: GFS < 0.5 mm/hr is set to 0 UNLESS HRRR also shows
-      precip. GFS over-reports light drizzle you don't really feel on the
-      street; gating it (only when HRRR corroborates dryness) also slightly
-      improved full-year gauge accuracy.
-   2. Soft-cap HRRR above a knee K toward a ceiling C (tames convective
-      point-spikes; e.g. a raw 73.8 mm/hr → 12.0). C¹-continuous at K.
-   3. Lead-weighted blend: HRRR is most skillful near-term, so weight it
-      0.75 at ≤12 h, decaying to 0.60 by 48 h. */
-const CAP_KNEE = 10, CAP_CEIL = 12;
-const W_NEAR = 0.75, W_FAR = 0.60, LEAD_NEAR = 12, LEAD_FAR = 48;
-const GFS_DRIZZLE = 0.5;   // mm/hr: GFS below this is gated out unless HRRR is wet
+   Outlier-rejected mean: among the models that have a value this hour, if the
+   single highest is a wild outlier (> 2× the next-highest), drop it — this
+   auto-kills uncorroborated convective spikes (e.g. HRRR 234 while all others
+   say ~12 → 234 dropped). Otherwise average them all, which preserves floods
+   every model agrees on AND rescues events that HRRR+GFS both miss but another
+   model caught. Confidence is read from the ensemble SPREAD, not a 2-model
+   comparison. */
 
-function softcapHrrr(x) {
-  if (x <= CAP_KNEE) return x;
-  return CAP_KNEE + (CAP_CEIL - CAP_KNEE) * (1 - Math.exp(-(x - CAP_KNEE)/(CAP_CEIL - CAP_KNEE)));
-}
-function hrrrWeight(leadH) {
-  if (leadH <= LEAD_NEAR) return W_NEAR;
-  if (leadH >= LEAD_FAR)  return W_FAR;
-  return W_NEAR + (W_FAR - W_NEAR) * (leadH - LEAD_NEAR)/(LEAD_FAR - LEAD_NEAR);
-}
-function gateGfs(hrrr, gfs) {
-  if (gfs == null) return 0;
-  if (gfs < GFS_DRIZZLE && (hrrr == null || hrrr < PRECIP_MIN)) return 0;
-  return gfs;
-}
-
-/* The synthesized precipitation value (mm/hr) for one hour. */
-function synthPrecip(hrrr, gfs, leadH) {
-  if (hrrr == null && gfs == null) return 0;
-  const g = gateGfs(hrrr, gfs);
-  if (hrrr == null) return g;
-  if (gfs == null)  return softcapHrrr(hrrr);
-  const w = hrrrWeight(leadH);
-  return w * softcapHrrr(hrrr) + (1 - w) * g;
-}
-
-/* Renders the precip cell <td> from a precomputed synth value, colored by
-   how much the two RAW models disagree, and carrying data-* with the raw
-   values for the long-press readout. */
-function rainTd(synth, hrrr, gfs) {
-  const dh = hrrr == null ? '—' : hrrr.toFixed(1);
-  const dg = gfs  == null ? '—' : gfs.toFixed(1);
-  if (synth < PRECIP_MIN)
-    return `<td class="cell-rain"></td>`;
-  // Disagreement from RAW models: 1 − lo/hi, only when ≥ 2.5 mm/hr is in play.
-  let cls = 'rain-agree';
-  if (hrrr != null && gfs != null) {
-    const hi = Math.max(hrrr, gfs), lo = Math.min(hrrr, gfs);
-    if (hi >= 2.5 && (1 - lo / hi) >= 0.5) cls = 'rain-disagree';
+/* Combine one hour's per-model values → {val, spread, members}.
+   members keeps name/value pairs (incl. dropped/missing) for the long-press
+   readout. spread is a coefficient of variation over the available values. */
+function ensemble(members) {
+  const have = members.filter(m => m.v != null).map(m => m.v);
+  if (have.length === 0) return null;
+  const mean = have.reduce((s, x) => s + x, 0) / have.length;
+  let val = mean;
+  if (have.length >= 3) {
+    const s = [...have].sort((a, b) => a - b);
+    const top = s[s.length - 1], second = s[s.length - 2];
+    if (top > 2 * second + 1.0) {                 // outlier → drop it
+      const rest = s.slice(0, -1);
+      val = rest.reduce((p, x) => p + x, 0) / rest.length;
+    }
   }
-  return `<td class="cell-rain" data-h="${dh}" data-g="${dg}">` +
-         `<span class="${cls}">${synth.toFixed(1)}</span></td>`;
+  const sd = Math.sqrt(have.reduce((p, x) => p + (x - mean) ** 2, 0) / have.length);
+  const spread = mean > 0.2 ? sd / mean : 0;      // CV; undefined for ~dry
+  return { val, spread, members };
+}
+
+/* Disagreement color: cyan (tight agreement) → green (wide spread), the green
+   getting more intense with ensemble spread. Calm cyan for trivial amounts. */
+function spreadColor(spread, val) {
+  if (val < 2.5) return 'rgb(56,165,248)';        // cyan — not worth flagging
+  const t = Math.max(0, Math.min(1, (spread - 0.35) / (1.05 - 0.35)));
+  const c0 = [56, 165, 248], c1 = [34, 197, 94];  // #38bdf8 → #22c55e
+  const c = c0.map((v, i) => Math.round(v + (c1[i] - v) * t));
+  return `rgb(${c[0]},${c[1]},${c[2]})`;
+}
+
+/* Renders the precip cell <td> from an ensemble result, colored by spread and
+   carrying the per-model breakdown for the long-press readout. */
+function rainTd(ens) {
+  if (ens == null || ens.val < PRECIP_MIN) return `<td class="cell-rain"></td>`;
+  const data = ens.members
+    .map(m => `${m.name} ${m.v == null ? '—' : m.v.toFixed(1)}`).join('|');
+  const color = spreadColor(ens.spread, ens.val);
+  return `<td class="cell-rain" data-ens="${data}" data-val="${ens.val.toFixed(1)}">` +
+         `<span style="color:${color}">${ens.val.toFixed(1)}</span></td>`;
 }
 
 /* ===================== Time ===================== */
@@ -523,21 +537,26 @@ let lastData = null;        // cached so toggling temp unit doesn't re-fetch
 
 async function refresh() {
   try {
-    const [hRes, gRes] = await Promise.all([fetch(HRRR_URL), fetch(GFS_URL)]);
+    const [hRes, eRes] = await Promise.all([fetch(HRRR_URL), fetch(ENS_URL)]);
     if (!hRes.ok) throw new Error(`HRRR HTTP ${hRes.status}`);
-    if (!gRes.ok) throw new Error(`GFS HTTP ${gRes.status}`);
-    const [hrrr, gfs] = await Promise.all([hRes.json(), gRes.json()]);
-    // Index GFS precip by time string so we can align with each HRRR row
-    const gfsPrecip = {};
-    gfs.hourly.time.forEach((t, i) => { gfsPrecip[t] = gfs.hourly.precipitation[i]; });
-    lastData = { hrrr, gfsPrecip };
+    if (!eRes.ok) throw new Error(`ensemble HTTP ${eRes.status}`);
+    const [hrrr, ens] = await Promise.all([hRes.json(), eRes.json()]);
+    // Index each ensemble model's precip by time string for alignment.
+    // ensByTime[time] = { GFS: 1.2, JMA: 0.0, ECMWF: 1.4, ... }
+    const ensByTime = {};
+    ens.hourly.time.forEach((t, i) => {
+      const row = {};
+      ENS_MODELS.forEach(m => { row[m.name] = ens.hourly['precipitation_' + m.id][i]; });
+      ensByTime[t] = row;
+    });
+    lastData = { hrrr, ensByTime };
     render(lastData);
     updateHeader();
   } catch (err) {
     const s = document.getElementById('status');
     s.className = 'status err';
     s.style.display = '';
-    s.textContent = `Couldn't load HRRR: ${err.message}`;
+    s.textContent = `Couldn't load forecast: ${err.message}`;
     document.getElementById('table').style.display = 'none';
   }
 }
@@ -545,7 +564,7 @@ async function refresh() {
 function updateHeader() {
   const now = new Date();
   const t = now.toLocaleTimeString('en-US', {hour:'numeric', minute:'2-digit'});
-  document.getElementById('updated').textContent = `Updated ${t} · HRRR hourly`;
+  document.getElementById('updated').textContent = `Updated ${t} · 6-model rain blend`;
 }
 
 function render(data) {
@@ -565,7 +584,7 @@ function render(data) {
   const ws    = h.wind_speed_10m;
   const wd    = h.wind_direction_10m;
   const day   = h.is_day;
-  const gfsPrecip = data.gfsPrecip || {};
+  const ensByTime = data.ensByTime || {};
 
   const now = new Date();
   const currentHourStart = new Date(now.getFullYear(), now.getMonth(), now.getDate(), now.getHours(), 0, 0);
@@ -592,11 +611,14 @@ function render(data) {
     }
     prevDateKey = dateKey;
 
-    // Synthesized precip drives BOTH the rainfall cell and the icon's rain,
-    // so the icon always agrees with the number shown in the column.
-    const leadH  = (ts.getTime() - currentHourStart.getTime()) / 3600000;
-    const gfsVal = gfsPrecip[times[i]];
-    const synth  = synthPrecip(pr[i], gfsVal, leadH);
+    // The ensemble drives BOTH the rainfall cell and the icon's rain, so the
+    // icon always agrees with the number shown in the column. HRRR is the first
+    // ensemble member (it carries the other table columns too).
+    const others = ensByTime[times[i]] || {};
+    const members = [{ name: 'HRRR', v: pr[i] }]
+      .concat(ENS_MODELS.map(m => ({ name: m.name, v: others[m.name] })));
+    const ens = ensemble(members);
+    const synth = ens ? ens.val : 0;
 
     const eff = effectiveCloud(ccL[i], ccM[i], ccH[i], pr[i], wc[i]);
     const cb = cloudBand(eff);
@@ -610,7 +632,7 @@ function render(data) {
       `<td class="cell-hour">${hourBand(ts)}</td>` +
       `<td class="cell-temp">${tempDisplay(temp[i])}</td>` +
       `<td class="cell-sky">${ICONS[iconKey]}</td>` +
-      rainTd(synth, pr[i], gfsVal) +
+      rainTd(ens) +
       `<td class="cell-wind">${windIcon(wd[i], Math.round(ws[i]))}</td>`;
     tbody.appendChild(tr);
     rowsShown++;
@@ -637,9 +659,13 @@ function render(data) {
   let timer = null;
 
   function show(td) {
-    box.innerHTML =
-      `<div><b class="ri-h">HRRR:</b> ${td.dataset.h} mm</div>` +
-      `<div><b class="ri-g">GFS:</b> ${td.dataset.g} mm</div>`;
+    // data-ens = "HRRR 2.5|GFS 1.2|JMA 0.0|..." ; data-val = blended result
+    const rows = td.dataset.ens.split('|').map(p => {
+      const i = p.lastIndexOf(' ');
+      return `<div><b>${p.slice(0, i)}</b><span>${p.slice(i + 1)}</span></div>`;
+    }).join('');
+    box.innerHTML = `<div class="ri-grid">${rows}</div>` +
+      `<div class="ri-blend"><b>Blend</b><span>${td.dataset.val} mm</span></div>`;
     box.style.display = 'block';
   }
   function hide() {
@@ -648,9 +674,9 @@ function render(data) {
   }
   function start(e) {
     const td = e.target.closest('.cell-rain');
-    if (!td || td.dataset.h == null) return;   // empty (dry) cells carry no data-*
+    if (!td || td.dataset.ens == null) return;   // empty (dry) cells carry no data
     clearTimeout(timer);
-    timer = setTimeout(() => show(td), 350);   // long-press threshold
+    timer = setTimeout(() => show(td), 350);     // long-press threshold
   }
 
   rows.addEventListener('touchstart', start, { passive: true });
