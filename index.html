@@ -222,7 +222,7 @@ const ENS_MODELS = [
   {id: 'gem_global',   name: 'GEM'},
 ];
 const ENS_URL = buildUrl(ENS_MODELS.map(m => m.id).join(','), ['precipitation']);
-const PRECIP_MIN = 0.1;  // mm: ensemble values below this render as nothing
+const PRECIP_MIN = 0.15;  // mm: ensemble values below this render as nothing (hides trace/drizzle)
 
 /* ===================== Cloud palette ===================== */
 /* light → white front → medium (snow) → dark (overcast/storm) */
@@ -473,13 +473,11 @@ function ensemble(members) {
       val = rest.reduce((p, x) => p + x, 0) / rest.length;
     }
   }
-  // Dry consensus: if only a 1–2 model minority shows rain — and none of them a
-  // substantial amount — treat the hour as dry. Kills the light drizzle a couple
-  // of models tend to overstate when the majority say it's dry. (A substantial
-  // minority signal ≥ 8 mm is kept and flagged, so real events still surface.)
-  const wet = have.filter(v => v >= 0.5).length;
-  if (wet <= 2 && wet * 2 < have.length && Math.max(...have) < 8) val = 0;
-
+  // Trace/drizzle suppression is handled downstream by PRECIP_MIN: the outlier
+  // rejection above already strips a lone overstater, so a true drizzle hour
+  // falls below the floor on its own. (A previous count-based "dry consensus"
+  // rule was removed — it mis-read broad light rain, where several models sit at
+  // 0.2–0.5 mm, as minority drizzle and wrongly zeroed real rain.)
   const sd = Math.sqrt(have.reduce((p, x) => p + (x - mean) ** 2, 0) / have.length);
   const spread = mean > 0.2 ? sd / mean : 0;      // CV; undefined for ~dry
   return { val, spread, members };
