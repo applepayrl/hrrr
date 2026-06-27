@@ -8,6 +8,8 @@
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="HRRR 10065">
 <title>HRRR · 10065</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <style>
   * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
   html, body {
@@ -170,6 +172,68 @@
     font-size: 14px;
   }
   .status.err { color: #f87171; }
+
+  /* ===================== Radar map ===================== */
+  /* Round radar button, top-right of the (centered, sticky) header. */
+  #radarBtn {
+    position: absolute;
+    top: calc(env(safe-area-inset-top) + 12px);
+    right: 14px;
+    width: 38px; height: 38px;
+    display: flex; align-items: center; justify-content: center;
+    padding: 0;
+    background: rgba(255,255,255,0.08);
+    border: 1px solid rgba(255,255,255,0.14);
+    border-radius: 50%;
+    color: #cbd5e1;
+    cursor: pointer;
+  }
+  #radarBtn:active { background: rgba(255,255,255,0.18); }
+  #radarBtn svg { width: 22px; height: 22px; display: block; }
+
+  /* Full-screen radar overlay (hidden until opened). */
+  #radarView { display: none; position: fixed; inset: 0; z-index: 1000; background: #000; }
+  #radarView.open { display: block; }
+  #radarMap { position: absolute; inset: 0; width: 100%; height: 100%; background: #0b0b0f; }
+  #radarClose {
+    position: absolute; z-index: 1002;
+    top: calc(env(safe-area-inset-top) + 12px);
+    right: calc(env(safe-area-inset-right) + 12px);
+    width: 40px; height: 40px;
+    display: flex; align-items: center; justify-content: center;
+    border-radius: 50%;
+    background: rgba(0,0,0,0.6);
+    border: 1px solid rgba(255,255,255,0.25);
+    color: #fff; font-size: 20px; line-height: 1; cursor: pointer;
+    -webkit-backdrop-filter: blur(6px); backdrop-filter: blur(6px);
+  }
+  /* 20-minute precip-motion arrow, pinned bottom-right. */
+  #radarArrow {
+    position: absolute; z-index: 1001;
+    inset: 0; width: 100%; height: 100%;
+    pointer-events: none; display: none;
+    /* Soft white glow = legible over radar without a hard outline that would
+       blunt the sharp tip. */
+    filter: drop-shadow(0 0 1px rgba(255,255,255,0.95)) drop-shadow(0 0 1px rgba(255,255,255,0.95));
+  }
+  /* Status pill (loading / no-precip), shares the bottom-right corner. */
+  #radarMsg {
+    position: absolute; z-index: 1001;
+    right: calc(env(safe-area-inset-right) + 14px);
+    bottom: calc(env(safe-area-inset-bottom) + 18px);
+    max-width: 200px; text-align: right;
+    font-size: 12px; font-weight: 600; color: #1f2937;
+    background: rgba(255,255,255,0.82);
+    border-radius: 8px; padding: 5px 9px;
+    display: none;
+  }
+  /* Strip Leaflet chrome down to a faint attribution (licensing) in the corner
+     away from the arrow. */
+  #radarView .leaflet-control-attribution {
+    font-size: 9px; background: rgba(255,255,255,0.55);
+    color: #555; padding: 0 4px;
+  }
+  #radarView .leaflet-control-attribution a { color: #555; }
 </style>
 </head>
 <body>
@@ -177,6 +241,16 @@
 <header>
   <div class="loc">HRRR · 10065 Upper East Side</div>
   <div class="upd" id="updated">Loading…</div>
+  <button id="radarBtn" aria-label="Open radar map">
+    <svg viewBox="0 0 24 24">
+      <g fill="none" stroke="currentColor" stroke-width="1.6">
+        <circle cx="12" cy="12" r="9"/>
+        <circle cx="12" cy="12" r="5.5"/>
+        <circle cx="12" cy="12" r="2"/>
+      </g>
+      <path d="M12 12 L20 7" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+    </svg>
+  </button>
 </header>
 
 <main>
@@ -193,6 +267,13 @@
 </main>
 
 <div id="rainInfo"></div>
+
+<div id="radarView">
+  <div id="radarMap"></div>
+  <svg id="radarArrow" viewBox="0 0 160 160" aria-hidden="true"></svg>
+  <div id="radarMsg"></div>
+  <button id="radarClose" aria-label="Close radar map">✕</button>
+</div>
 
 <script>
 /* ===================== Config ===================== */
@@ -706,6 +787,242 @@ function render(data) {
   rows.addEventListener('mousedown',  start);
   rows.addEventListener('mouseup',    hide);
   rows.addEventListener('mouseleave', hide);
+})();
+
+/* ===================== Radar map ===================== */
+/* A full-screen NWS-style radar snapshot (RainViewer tiles on a light CARTO
+   base), locked to the exact center/zoom of the user's radar.weather.gov link.
+   Only the latest frame is shown. A bottom-right arrow shows where precip drifts
+   in 30 minutes (RADAR.projSec): precip velocity is cross-correlated between the
+   latest frame and one ~20 min earlier (public radar updates ~every 10 min) and
+   scaled to the projection window. */
+(function () {
+  const RADAR = {
+    center: [40.596, -73.994],   // [lat, lon] — decoded from the link's settings
+    zoom: 8.1788126,             // decoded zoom (fractional; zoomSnap:0)
+    color: 6,                    // RainViewer palette: 6 = NEXRAD Level-III (NWS-like)
+    Z: 7,                        // integer analysis zoom (RainViewer radar maxzoom = 7)
+    WIN: 400,                    // analysis window (px) around center
+    D: 80,                       // downsampled correlation grid (D×D)
+    maxSpeed: 36,                // m/s (~80 mph) cap on plausible storm motion
+    minCoverage: 0.004,          // <0.4% precip pixels in view ⇒ "nothing nearby"
+    confMin: 0.35,               // min normalized-correlation peak to trust a vector
+    projSec: 1800,               // arrow length = how far precip drifts in this long (30 min)
+    stationaryM: 1500,           // <1.5 km of projected drift ⇒ treat as stationary
+  };
+
+  const view     = document.getElementById('radarView');
+  const btn      = document.getElementById('radarBtn');
+  const closeBtn = document.getElementById('radarClose');
+  const msgEl    = document.getElementById('radarMsg');
+  const arrowSvg = document.getElementById('radarArrow');
+  let map = null, radarLayer = null;
+
+  btn.addEventListener('click', open);
+  closeBtn.addEventListener('click', () => view.classList.remove('open'));
+  // Refresh the frame when returning to a still-open radar view.
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden && view.classList.contains('open')) loadRadar();
+  });
+
+  function open() {
+    view.classList.add('open');
+    if (!map) initMap();
+    loadRadar();
+    // The container just became visible at full size — flush layout, then let
+    // Leaflet remeasure so it tiles the whole viewport (fixes first-open sizing).
+    requestAnimationFrame(() => map.invalidateSize());
+  }
+
+  function initMap() {
+    map = L.map('radarMap', {
+      center: RADAR.center, zoom: RADAR.zoom, zoomSnap: 0,
+      zoomControl: false, attributionControl: true,
+      // Locked snapshot — no pan/zoom (faithful to the link).
+      dragging: false, scrollWheelZoom: false, doubleClickZoom: false,
+      touchZoom: false, boxZoom: false, keyboard: false, tap: false,
+    });
+    map.attributionControl.setPosition('bottomleft');   // away from the arrow
+    L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', {
+      subdomains: 'abcd', maxZoom: 19,
+      attribution: '© OSM © CARTO · radar © RainViewer',
+    }).addTo(map);
+    window.__radarMap = map;   // debug hook
+  }
+
+  async function loadRadar() {
+    setMsg('Loading radar…');
+    hideArrow();
+    try {
+      const r = await fetch('https://api.rainviewer.com/public/weather-maps.json');
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      const data = await r.json();
+      const past = (data.radar && data.radar.past) || [];
+      if (!past.length) throw new Error('no frames');
+      const host = data.host;
+      const latest = past[past.length - 1];
+      if (radarLayer) map.removeLayer(radarLayer);
+      radarLayer = L.tileLayer(
+        `${host}${latest.path}/256/{z}/{x}/{y}/${RADAR.color}/1_1.png`,
+        // RainViewer radar data caps at zoom 7; upscale it for the locked ~8.18 view.
+        { opacity: 0.75, crossOrigin: 'anonymous', maxNativeZoom: 7, maxZoom: 19 }
+      ).addTo(map);
+      setMsg('');
+      // Motion estimate is best-effort; a failure must not blank the map.
+      computeArrow(host, past).catch(e => { console.warn('radar arrow:', e); });
+    } catch (e) {
+      setMsg('Radar unavailable: ' + e.message);
+    }
+  }
+
+  /* ---- Web Mercator helpers (256-px tiles) ---- */
+  function lonLatToGlobalPixel(lon, lat, z) {
+    const n = 256 * Math.pow(2, z);
+    const x = (lon + 180) / 360 * n;
+    const latRad = lat * Math.PI / 180;
+    const y = (1 - Math.asinh(Math.tan(latRad)) / Math.PI) / 2 * n;
+    return { x, y };
+  }
+  function resMeters(z, lat) {                 // ground meters per pixel
+    return 156543.03392 * Math.cos(lat * Math.PI / 180) / Math.pow(2, z);
+  }
+  function loadImg(url) {
+    return new Promise((res, rej) => {
+      const img = new Image();
+      img.crossOrigin = 'anonymous';           // CORS — required to read pixels
+      img.onload = () => res(img);
+      img.onerror = rej;
+      img.src = url;
+    });
+  }
+
+  /* Composite one radar frame over the analysis window, reduce to a D×D
+     intensity mask. Returns [Float32Array(D*D), coverageFraction]. */
+  async function frameMask(host, frame) {
+    const { Z, WIN, D, color } = RADAR;
+    const c = lonLatToGlobalPixel(RADAR.center[1], RADAR.center[0], Z);
+    const originX = c.x - WIN / 2, originY = c.y - WIN / 2;
+    const canvas = document.createElement('canvas');
+    canvas.width = WIN; canvas.height = WIN;
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+    const n = Math.pow(2, Z);
+    const tx0 = Math.floor(originX / 256), tx1 = Math.floor((originX + WIN - 1) / 256);
+    const ty0 = Math.floor(originY / 256), ty1 = Math.floor((originY + WIN - 1) / 256);
+    const jobs = [];
+    for (let tx = tx0; tx <= tx1; tx++) {
+      for (let ty = ty0; ty <= ty1; ty++) {
+        if (ty < 0 || ty >= n) continue;
+        const txw = ((tx % n) + n) % n;
+        const url = `${host}${frame.path}/256/${Z}/${txw}/${ty}/${color}/1_1.png`;
+        const dx = tx * 256 - originX, dy = ty * 256 - originY;
+        jobs.push(loadImg(url)
+          .then(img => ctx.drawImage(img, dx, dy))
+          .catch(() => {}));            // missing tile = no echo there
+      }
+    }
+    await Promise.all(jobs);
+    const px = ctx.getImageData(0, 0, WIN, WIN).data;
+    const mask = new Float32Array(D * D);
+    const bs = WIN / D;
+    let covCount = 0;
+    for (let y = 0; y < WIN; y++) {
+      const cy = Math.min(D - 1, (y / bs) | 0);
+      for (let x = 0; x < WIN; x++) {
+        const a = px[(y * WIN + x) * 4 + 3];
+        if (a > 40) {
+          const cx = Math.min(D - 1, (x / bs) | 0);
+          mask[cy * D + cx] += a / 255;
+          covCount++;
+        }
+      }
+    }
+    return [mask, covCount / (WIN * WIN)];
+  }
+
+  /* Best integer shift (dx east+, dy south+) aligning newer frame B onto older
+     frame A — i.e. the displacement precip travelled. Uncentered normalized
+     cross-correlation over the overlapping region; peak score = confidence. */
+  function estimateShift(B, A, D, maxShift) {
+    let best = -Infinity, bdx = 0, bdy = 0;
+    for (let dy = -maxShift; dy <= maxShift; dy++) {
+      for (let dx = -maxShift; dx <= maxShift; dx++) {
+        let s = 0, eA = 0, eB = 0;
+        for (let i = 0; i < D; i++) {
+          const ai = i - dy; if (ai < 0 || ai >= D) continue;
+          for (let j = 0; j < D; j++) {
+            const aj = j - dx; if (aj < 0 || aj >= D) continue;
+            const b = B[i * D + j], a = A[ai * D + aj];
+            s += b * a; eA += a * a; eB += b * b;
+          }
+        }
+        const norm = Math.sqrt(eA * eB);
+        const score = norm > 0 ? s / norm : 0;
+        if (score > best) { best = score; bdx = dx; bdy = dy; }
+      }
+    }
+    return { dx: bdx, dy: bdy, conf: best };
+  }
+
+  async function computeArrow(host, past) {
+    hideArrow();
+    if (past.length < 2) { setMsg('Motion unavailable'); return; }
+    const latest = past[past.length - 1];
+    const prev = past[Math.max(0, past.length - 3)];   // ~20 min earlier (2 steps)
+    const dt = latest.time - prev.time;                // seconds
+    if (dt <= 0) { setMsg('Motion unavailable'); return; }
+
+    const [maskA, covA] = await frameMask(host, prev);
+    const [maskB, covB] = await frameMask(host, latest);
+    if (Math.max(covA, covB) < RADAR.minCoverage) { setMsg('— no precipitation nearby —'); return; }
+
+    const cell = RADAR.WIN / RADAR.D;
+    const maxFull = (RADAR.maxSpeed * dt) / resMeters(RADAR.Z, RADAR.center[0]);
+    const maxShift = Math.max(1, Math.min(RADAR.D - 1, Math.ceil(maxFull / cell)));
+    const sh = estimateShift(maskB, maskA, RADAR.D, maxShift);
+    if (sh.conf < RADAR.confMin) { setMsg('— precip motion uncertain —'); return; }
+
+    const distM = Math.hypot(sh.dx, sh.dy) * cell * resMeters(RADAR.Z, RADAR.center[0]);
+    const proj = (distM / dt) * RADAR.projSec;         // metres precip drifts in projSec (30 min)
+    window.__radarLast = { shift: sh, dt, proj, covA, covB };  // debug hook
+    if (proj < RADAR.stationaryM) { setMsg('— precip ≈ stationary —'); return; }
+
+    drawArrow(Math.atan2(sh.dy, sh.dx), proj);
+  }
+
+  /* The tip is pinned to zip 10065 (the forecast location, COORDS); the shaft is
+     drawn upwind so the tip lands exactly on 10065 for any magnitude/direction.
+     Length is true-to-map-scale at the locked display zoom. Butt caps + an apex-
+     anchored halo head ⇒ nothing ever pokes past the tip. */
+  function drawArrow(angRad, projM) {
+    if (!map) return;
+    const tip = map.latLngToContainerPoint([COORDS.lat, COORDS.lon]);
+    const len = projM / resMeters(RADAR.zoom, RADAR.center[0]);   // px on the live map
+    const ux = Math.cos(angRad), uy = Math.sin(angRad);
+    const tailX = tip.x - ux * len, tailY = tip.y - uy * len;
+    const headLen = Math.min(19, Math.max(13, len * 0.52));
+    const spread = 0.46;                                          // arrowhead half-angle
+    const blX = tip.x - headLen * Math.cos(angRad - spread), blY = tip.y - headLen * Math.sin(angRad - spread);
+    const brX = tip.x - headLen * Math.cos(angRad + spread), brY = tip.y - headLen * Math.sin(angRad + spread);
+    // The shaft stops short of the apex (tucked under the wide part of the head) so
+    // only the triangle's sharp point defines the tip — no flat shaft edge pokes out.
+    const neck = headLen * 0.85;
+    const nX = tip.x - ux * neck, nY = tip.y - uy * neck;
+    const shaft = len > neck + 1
+      ? `<line x1="${tailX}" y1="${tailY}" x2="${nX}" y2="${nY}" stroke="#000" stroke-width="5" stroke-linecap="butt"/>`
+      : '';
+    const size = map.getSize();
+    arrowSvg.setAttribute('viewBox', `0 0 ${size.x} ${size.y}`);
+    arrowSvg.innerHTML = shaft +
+      `<polygon points="${tip.x},${tip.y} ${blX},${blY} ${brX},${brY}" fill="#000"/>`;
+    arrowSvg.style.display = 'block';
+    setMsg('');
+  }
+
+  function setMsg(t) { msgEl.textContent = t; msgEl.style.display = t ? 'block' : 'none'; if (t) hideArrow(); }
+  function hideArrow() { arrowSvg.style.display = 'none'; }
+
+  // Debug hooks for verification (deterministic test of the motion math).
+  window.__radar = { estimateShift, resMeters, lonLatToGlobalPixel, frameMask, computeArrow, loadRadar, drawArrow };
 })();
 
 /* ===================== Boot ===================== */
