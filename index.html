@@ -42,7 +42,11 @@
     font-size: 15px;
     font-weight: 600;
     letter-spacing: -0.01em;
+    cursor: pointer;
+    -webkit-user-select: none;
+    user-select: none;
   }
+  .loc:active { color: #8aa0bf; }
   .upd {
     font-size: 11px;
     color: #8aa0bf;
@@ -207,7 +211,7 @@
     color: #fff; font-size: 20px; line-height: 1; cursor: pointer;
     -webkit-backdrop-filter: blur(6px); backdrop-filter: blur(6px);
   }
-  /* 20-minute precip-motion arrow, pinned bottom-right. */
+  /* 30-minute precip-motion arrow, tip pinned on zip 10065. */
   #radarArrow {
     position: absolute; z-index: 1001;
     inset: 0; width: 100%; height: 100%;
@@ -227,6 +231,18 @@
     border-radius: 8px; padding: 5px 9px;
     display: none;
   }
+  /* Frame/refresh timestamp pill, top-left (away from close button & arrow). */
+  #radarStamp {
+    position: absolute; z-index: 1001;
+    top: calc(env(safe-area-inset-top) + 12px);
+    left: calc(env(safe-area-inset-left) + 14px);
+    font-size: 12px; font-weight: 600; color: #1f2937;
+    background: rgba(255,255,255,0.82);
+    border-radius: 8px; padding: 5px 9px;
+    line-height: 1.35;
+    display: none;
+  }
+  #radarStamp .rs-sub { font-weight: 500; color: #4b5563; }
   /* Strip Leaflet chrome down to a faint attribution (licensing) in the corner
      away from the arrow. */
   #radarView .leaflet-control-attribution {
@@ -239,7 +255,8 @@
 <body>
 
 <header>
-  <div class="loc">HRRR · 10065 Upper East Side</div>
+  <div class="loc" id="title" onclick="cycleModel()" role="button"
+       aria-label="Cycle forecast model">HRRR · 10065 Upper East Side</div>
   <div class="upd" id="updated">Loading…</div>
   <button id="radarBtn" aria-label="Open radar map">
     <svg viewBox="0 0 24 24">
@@ -263,7 +280,7 @@
     </thead>
     <tbody id="rows"></tbody>
   </table>
-  <div class="status" id="status">Loading HRRR forecast…</div>
+  <div class="status" id="status">Loading forecast…</div>
 </main>
 
 <div id="rainInfo"></div>
@@ -272,6 +289,7 @@
   <div id="radarMap"></div>
   <svg id="radarArrow" viewBox="0 0 160 160" aria-hidden="true"></svg>
   <div id="radarMsg"></div>
+  <div id="radarStamp"></div>
   <button id="radarClose" aria-label="Close radar map">✕</button>
 </div>
 
@@ -287,22 +305,30 @@ function buildUrl(model, hourly) {
     '&temperature_unit=celsius&wind_speed_unit=mph&precipitation_unit=mm' +
     '&timezone=America/New_York&forecast_hours=48';
 }
-const HRRR_URL = buildUrl('gfs_hrrr', [
+// Selectable sources (tap the title to cycle). All three come back in ONE
+// request with per-model suffixed fields, so cycling never refetches.
+const MODELS = [
+  {id: 'gfs_hrrr',     name: 'HRRR'},
+  {id: 'gfs_global',   name: 'GFS'},
+  {id: 'ecmwf_ifs025', name: 'ECMWF'},
+];
+const MAIN_URL = buildUrl(MODELS.map(m => m.id).join(','), [
   'temperature_2m','cloud_cover_low','cloud_cover_mid','cloud_cover_high',
   'precipitation','weather_code','wind_speed_10m','wind_direction_10m','is_day'
 ]);
-// Precip ensemble: 5 independent globals fetched in one request; combined with
-// HRRR (above) into a 6-model outlier-rejected mean. Backtested over 2–5 yrs vs
-// the Central Park gauge — beats every 2-model approach on typical AND extreme
-// days, and catches floods HRRR+GFS both miss. (GraphCast omitted: null live.)
-const ENS_MODELS = [
-  {id: 'gfs_global',   name: 'GFS'},
+// Precip ensemble: 3 more independent globals fetched in one request; combined
+// with the selectable three (above) into a 6-model outlier-rejected mean.
+// Backtested over 2–5 yrs vs the Central Park gauge — beats every 2-model
+// approach on typical AND extreme days, and catches floods HRRR+GFS both miss.
+// (GraphCast omitted: null live.)
+const ENS_EXTRA = [
   {id: 'jma_gsm',      name: 'JMA'},
-  {id: 'ecmwf_ifs025', name: 'ECMWF'},
   {id: 'icon_global',  name: 'ICON'},
   {id: 'gem_global',   name: 'GEM'},
 ];
-const ENS_URL = buildUrl(ENS_MODELS.map(m => m.id).join(','), ['precipitation']);
+const ENS_URL = buildUrl(ENS_EXTRA.map(m => m.id).join(','), ['precipitation']);
+// Fixed member order for the ensemble / long-press readout.
+const ENS_ORDER = ['HRRR', 'GFS', 'JMA', 'ECMWF', 'ICON', 'GEM'];
 const PRECIP_MIN = 0.15;  // mm: ensemble values below this render as nothing (hides trace/drizzle)
 
 /* ===================== Cloud palette ===================== */
@@ -575,19 +601,20 @@ function spreadColor(spread, val) {
   return `rgb(${c[0]},${c[1]},${c[2]})`;
 }
 
-/* Renders the precip cell <td> from an ensemble result, colored by spread and
-   carrying the per-model breakdown for the long-press readout. */
-function rainTd(ens) {
+/* Renders the precip cell <td>: the number is the SELECTED model's own value
+   (own), colored by the 6-model ensemble spread. The cell carries the full
+   per-model breakdown + blend for the long-press readout. */
+function rainTd(ens, own) {
   if (ens == null) return `<td class="cell-rain"></td>`;   // no model data at all
   const data = ens.members
     .map(m => `${m.name} ${m.v == null ? '—' : m.v.toFixed(1)}`).join('|');
   const attrs = `data-ens="${data}" data-val="${ens.val.toFixed(1)}"`;
-  // Dry hours show no number but stay long-pressable, so all 6 model outputs
-  // are still inspectable even when the blend rounds to nothing.
-  if (ens.val < PRECIP_MIN) return `<td class="cell-rain" ${attrs}></td>`;
-  const color = spreadColor(ens.spread, ens.val);
+  // Dry hours show no number but stay long-pressable, so the other models and
+  // the blend are still inspectable even when this model says nothing.
+  if (own == null || own < PRECIP_MIN) return `<td class="cell-rain" ${attrs}></td>`;
+  const color = spreadColor(ens.spread, own);
   return `<td class="cell-rain" ${attrs}>` +
-         `<span style="color:${color}">${ens.val.toFixed(1)}</span></td>`;
+         `<span style="color:${color}">${own.toFixed(1)}</span></td>`;
 }
 
 /* ===================== Time ===================== */
@@ -624,24 +651,41 @@ function toggleTempUnit() {
   if (lastData) render(lastData);
 }
 
+/* ===================== Model selection ===================== */
+let modelIdx = Math.max(0, MODELS.findIndex(m =>
+  m.name === (typeof localStorage !== 'undefined' && localStorage.getItem('model'))));
+function currentModel() { return MODELS[modelIdx]; }
+function updateTitle() {
+  const name = currentModel().name;
+  document.getElementById('title').textContent = `${name} · 10065 Upper East Side`;
+  document.title = `${name} · 10065`;
+}
+function cycleModel() {
+  modelIdx = (modelIdx + 1) % MODELS.length;
+  try { localStorage.setItem('model', currentModel().name); } catch (e) {}
+  updateTitle();
+  if (lastData) { render(lastData); updateHeader(); }
+  refresh();   // instant re-render from cache above; also re-pull latest data
+}
+
 /* ===================== Render ===================== */
-let lastData = null;        // cached so toggling temp unit doesn't re-fetch
+let lastData = null;        // cached so cycling model / temp unit is instant
 
 async function refresh() {
   try {
-    const [hRes, eRes] = await Promise.all([fetch(HRRR_URL), fetch(ENS_URL)]);
-    if (!hRes.ok) throw new Error(`HRRR HTTP ${hRes.status}`);
+    const [mRes, eRes] = await Promise.all([fetch(MAIN_URL), fetch(ENS_URL)]);
+    if (!mRes.ok) throw new Error(`models HTTP ${mRes.status}`);
     if (!eRes.ok) throw new Error(`ensemble HTTP ${eRes.status}`);
-    const [hrrr, ens] = await Promise.all([hRes.json(), eRes.json()]);
-    // Index each ensemble model's precip by time string for alignment.
-    // ensByTime[time] = { GFS: 1.2, JMA: 0.0, ECMWF: 1.4, ... }
-    const ensByTime = {};
+    const [main, ens] = await Promise.all([mRes.json(), eRes.json()]);
+    // Index the extra ensemble models' precip by time string for alignment.
+    // extraByTime[time] = { JMA: 0.0, ICON: 1.4, GEM: 0.2 }
+    const extraByTime = {};
     ens.hourly.time.forEach((t, i) => {
       const row = {};
-      ENS_MODELS.forEach(m => { row[m.name] = ens.hourly['precipitation_' + m.id][i]; });
-      ensByTime[t] = row;
+      ENS_EXTRA.forEach(m => { row[m.name] = ens.hourly['precipitation_' + m.id][i]; });
+      extraByTime[t] = row;
     });
-    lastData = { hrrr, ensByTime };
+    lastData = { main, extraByTime };
     render(lastData);
     updateHeader();
   } catch (err) {
@@ -656,7 +700,8 @@ async function refresh() {
 function updateHeader() {
   const now = new Date();
   const t = now.toLocaleTimeString('en-US', {hour:'numeric', minute:'2-digit'});
-  document.getElementById('updated').textContent = `Updated ${t} · 6-model rain blend`;
+  document.getElementById('updated').textContent =
+    `Updated ${t} · blend on long-press`;
 }
 
 function render(data) {
@@ -665,18 +710,24 @@ function render(data) {
   const status = document.getElementById('status');
 
   tbody.innerHTML = '';
-  const h     = data.hrrr.hourly;
+  // Re-rendering detaches any cell being long-pressed; its touchend then can't
+  // bubble anywhere, so dismiss the readout (and its pending timer) here.
+  if (window.__hideRainInfo) window.__hideRainInfo();
+  // Every row-visible variable comes from the SELECTED model's suffixed arrays;
+  // the other models only feed the rain blend behind the long-press card.
+  const h     = data.main.hourly;
+  const sfx   = '_' + currentModel().id;
   const times = h.time;
-  const temp  = h.temperature_2m;
-  const ccL   = h.cloud_cover_low;
-  const ccM   = h.cloud_cover_mid;
-  const ccH   = h.cloud_cover_high;
-  const pr    = h.precipitation;
-  const wc    = h.weather_code;
-  const ws    = h.wind_speed_10m;
-  const wd    = h.wind_direction_10m;
-  const day   = h.is_day;
-  const ensByTime = data.ensByTime || {};
+  const temp  = h['temperature_2m' + sfx];
+  const ccL   = h['cloud_cover_low' + sfx];
+  const ccM   = h['cloud_cover_mid' + sfx];
+  const ccH   = h['cloud_cover_high' + sfx];
+  const pr    = h['precipitation' + sfx];
+  const wc    = h['weather_code' + sfx];
+  const ws    = h['wind_speed_10m' + sfx];
+  const wd    = h['wind_direction_10m' + sfx];
+  const day   = h['is_day' + sfx];
+  const extraByTime = data.extraByTime || {};
 
   const now = new Date();
   const currentHourStart = new Date(now.getFullYear(), now.getMonth(), now.getDate(), now.getHours(), 0, 0);
@@ -703,18 +754,18 @@ function render(data) {
     }
     prevDateKey = dateKey;
 
-    // The ensemble drives BOTH the rainfall cell and the icon's rain, so the
-    // icon always agrees with the number shown in the column. HRRR is the first
-    // ensemble member (it carries the other table columns too).
-    const others = ensByTime[times[i]] || {};
-    const members = [{ name: 'HRRR', v: pr[i] }]
-      .concat(ENS_MODELS.map(m => ({ name: m.name, v: others[m.name] })));
+    // The rainfall cell and the icon's rain both follow the SELECTED model, so
+    // they always agree. The 6-model blend is computed per hour anyway — it
+    // colors the number by spread and feeds the long-press card.
+    const extras = extraByTime[times[i]] || {};
+    const byName = { ...extras };
+    MODELS.forEach(m => { byName[m.name] = h['precipitation_' + m.id][i]; });
+    const members = ENS_ORDER.map(name => ({ name, v: byName[name] }));
     const ens = ensemble(members);
-    const synth = ens ? ens.val : 0;
 
     const eff = effectiveCloud(ccL[i], ccM[i], ccH[i], pr[i], wc[i]);
     const cb = cloudBand(eff);
-    const rb = rainBand(synth);
+    const rb = rainBand(pr[i]);
     const isDay = day[i] === 1;
     const iconKey = pickIcon(cb, rb, isDay, wc[i]);
 
@@ -724,7 +775,7 @@ function render(data) {
       `<td class="cell-hour">${hourBand(ts)}</td>` +
       `<td class="cell-temp">${tempDisplay(temp[i])}</td>` +
       `<td class="cell-sky">${ICONS[iconKey]}</td>` +
-      rainTd(ens) +
+      rainTd(ens, pr[i]) +
       `<td class="cell-wind">${windIcon(wd[i], Math.round(ws[i]))}</td>`;
     tbody.appendChild(tr);
     rowsShown++;
@@ -753,11 +804,14 @@ function render(data) {
 
   function pt(e) { return (e.touches && e.touches[0]) || (e.changedTouches && e.changedTouches[0]) || e; }
   function show(td) {
-    // data-ens = "HRRR 2.5|GFS 1.2|JMA 0.0|..." ; data-val = blended result
+    // data-ens = "HRRR 2.5|GFS 1.2|JMA 0.0|..." ; data-val = blended result.
+    // The selected model's value is already visible in the row, so the card
+    // shows only the OTHER five models plus the blend.
     const lines = td.dataset.ens.split('|').map(p => {
       const i = p.lastIndexOf(' ');
-      return `<div><b>${p.slice(0, i)}</b><span>${p.slice(i + 1)}</span></div>`;
-    }).join('');
+      return { name: p.slice(0, i), val: p.slice(i + 1) };
+    }).filter(m => m.name !== currentModel().name)
+      .map(m => `<div><b>${m.name}</b><span>${m.val}</span></div>`).join('');
     box.innerHTML = `<div class="ri-grid">${lines}</div>` +
       `<div class="ri-blend"><b>Blend</b><span>${td.dataset.val} mm</span></div>`;
     box.style.display = 'block';
@@ -780,13 +834,17 @@ function render(data) {
   }
 
   rows.addEventListener('touchstart', start, { passive: true });
-  rows.addEventListener('touchend',   hide,  { passive: true });
-  rows.addEventListener('touchcancel',hide,  { passive: true });
   rows.addEventListener('touchmove',  move,  { passive: true });
+  // Release listeners live on document, not #rows: if a background refresh
+  // re-renders the table mid-press, the pressed cell is detached and its
+  // touchend/mouseup would never bubble to #rows — leaving the box stuck open.
+  document.addEventListener('touchend',   hide, { passive: true });
+  document.addEventListener('touchcancel',hide, { passive: true });
   // Desktop fallback for testing: press-and-hold with the mouse.
   rows.addEventListener('mousedown',  start);
-  rows.addEventListener('mouseup',    hide);
+  document.addEventListener('mouseup', hide);
   rows.addEventListener('mouseleave', hide);
+  window.__hideRainInfo = hide;   // render() dismisses on table re-render
 })();
 
 /* ===================== Radar map ===================== */
@@ -809,29 +867,47 @@ function render(data) {
     confMin: 0.35,               // min normalized-correlation peak to trust a vector
     projSec: 1800,               // arrow length = how far precip drifts in this long (30 min)
     stationaryM: 1500,           // <1.5 km of projected drift ⇒ treat as stationary
+    pollMs: 60 * 1000,           // background check for a fresh frame while open
   };
 
   const view     = document.getElementById('radarView');
   const btn      = document.getElementById('radarBtn');
   const closeBtn = document.getElementById('radarClose');
   const msgEl    = document.getElementById('radarMsg');
+  const stampEl  = document.getElementById('radarStamp');
   const arrowSvg = document.getElementById('radarArrow');
   let map = null, radarLayer = null;
+  let curFramePath = null;       // path of the frame currently on the map
+  let pollTimer = null;
 
   btn.addEventListener('click', open);
-  closeBtn.addEventListener('click', () => view.classList.remove('open'));
-  // Refresh the frame when returning to a still-open radar view.
+  closeBtn.addEventListener('click', close);
+  // Pause the poll while backgrounded; re-check immediately on return.
   document.addEventListener('visibilitychange', () => {
-    if (!document.hidden && view.classList.contains('open')) loadRadar();
+    if (!view.classList.contains('open')) return;
+    if (document.hidden) stopPoll();
+    else { loadRadar(); startPoll(); }
   });
 
   function open() {
     view.classList.add('open');
     if (!map) initMap();
     loadRadar();
+    startPoll();
     // The container just became visible at full size — flush layout, then let
     // Leaflet remeasure so it tiles the whole viewport (fixes first-open sizing).
     requestAnimationFrame(() => map.invalidateSize());
+  }
+  function close() {
+    view.classList.remove('open');
+    stopPoll();
+  }
+  function startPoll() {
+    stopPoll();
+    pollTimer = setInterval(loadRadar, RADAR.pollMs);
+  }
+  function stopPoll() {
+    if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
   }
 
   function initMap() {
@@ -850,9 +926,12 @@ function render(data) {
     window.__radarMap = map;   // debug hook
   }
 
+  /* Load-or-refresh: called on open, on returning to the tab, and every pollMs
+     while the view is open. Rebuilds tiles + arrow only when RainViewer has a
+     NEW frame; otherwise it just bumps the "checked" time in the stamp. */
   async function loadRadar() {
-    setMsg('Loading radar…');
-    hideArrow();
+    const firstLoad = !radarLayer;
+    if (firstLoad) { setMsg('Loading radar…'); hideArrow(); }
     try {
       const r = await fetch('https://api.rainviewer.com/public/weather-maps.json');
       if (!r.ok) throw new Error('HTTP ' + r.status);
@@ -861,18 +940,36 @@ function render(data) {
       if (!past.length) throw new Error('no frames');
       const host = data.host;
       const latest = past[past.length - 1];
+      if (latest.path === curFramePath) {         // same frame — stamp only
+        setStamp(latest.time);
+        return;
+      }
       if (radarLayer) map.removeLayer(radarLayer);
       radarLayer = L.tileLayer(
         `${host}${latest.path}/256/{z}/{x}/{y}/${RADAR.color}/1_1.png`,
         // RainViewer radar data caps at zoom 7; upscale it for the locked ~8.18 view.
         { opacity: 0.75, crossOrigin: 'anonymous', maxNativeZoom: 7, maxZoom: 19 }
       ).addTo(map);
+      curFramePath = latest.path;
+      setStamp(latest.time);
       setMsg('');
       // Motion estimate is best-effort; a failure must not blank the map.
       computeArrow(host, past).catch(e => { console.warn('radar arrow:', e); });
     } catch (e) {
-      setMsg('Radar unavailable: ' + e.message);
+      // A failed background poll must not blank a map that's already showing —
+      // keep the stale frame (and its honest stamp) and only report on first load.
+      if (firstLoad) setMsg('Radar unavailable: ' + e.message);
+      else console.warn('radar refresh:', e);
     }
+  }
+
+  /* "Radar 3:40 PM · checked 3:52 PM" — frame validity time vs. last fetch. */
+  function setStamp(frameSec) {
+    const fmt = d => d.toLocaleTimeString('en-US', {hour: 'numeric', minute: '2-digit'});
+    stampEl.innerHTML =
+      `Radar ${fmt(new Date(frameSec * 1000))}` +
+      ` <span class="rs-sub">· checked ${fmt(new Date())}</span>`;
+    stampEl.style.display = 'block';
   }
 
   /* ---- Web Mercator helpers (256-px tiles) ---- */
@@ -1027,6 +1124,7 @@ function render(data) {
 
 /* ===================== Boot ===================== */
 updateTempHeader();   // reflect persisted unit on first paint
+updateTitle();        // reflect persisted model on first paint
 refresh();
 setInterval(refresh, REFRESH_MS);
 document.addEventListener('visibilitychange', () => {
