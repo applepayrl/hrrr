@@ -62,3 +62,4 @@ C10 Publish: git push succeeds; https://applepayrl.github.io/hrrr/ serves new co
 - Known cosmetic quirk (pre-existing): hours with model precip 0.10–0.14 mm show a rain icon but a blank mm cell (rainBand wet ≥0.1 vs PRECIP_MIN display floor 0.15).
 - loadRadar keeps a stale-but-stamped frame if a background poll fails; only first load shows "Radar unavailable".
 - Preview sandbox: api.open-meteo.com AND api.rainviewer.com return real JSON; only map TILES are canned.
+- IMPORTANT: GitHub Pages did NOT auto-build on push — latest build was stuck at 2d1bbbb (June 27), meaning the radar commit 5d42a7c was never live. Had to trigger manually: `gh api -X POST repos/applepayrl/hrrr/pages/builds`. Check build after every push: `gh api repos/applepayrl/hrrr/pages/builds/latest --jq '.status + " " + .commit'`.
