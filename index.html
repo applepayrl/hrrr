@@ -1372,9 +1372,14 @@ function renderModelInto(tbody, mIdx, data) {
    stamped ~HH:51 covers the hour ending ≈(HH+1):00, which is exactly
    Open-Meteo's convention (value at T = precip over the hour ending at T), so
    each obs is bucketed to its ceil-hour and the latest report per bucket wins.
-   The window is the 24 hours ending at the newest reported hour; a few missing
-   hourly reports are tolerated (scored hours only), but a station must cover
-   ≥ minObsHours of the window or we fall through to the next station.
+   Coverage note (why this isn't just "the last 24 h"): Central Park is a
+   limited co-op site that leaves precip null on many dry hours, so the most
+   recent 24 h are often only partly reported. So we SLIDE the window's end back
+   up to maxSlideH from the newest report to land on the best-covered 24-h
+   stretch, and take the NEAREST station that reaches minObsHours (falling back
+   to the single best-covered station if none do). Missing hours carry v:null
+   and are simply skipped — every model is scored on the SAME present hours, so
+   gaps can't bias the ranking.
 
    Forecast: each model's run from ~24 h earlier (Open-Meteo previous-runs API,
    precipitation_previous_day1 — its finest run offset; per-user decision this
@@ -1401,49 +1406,81 @@ function renderModelInto(tbody, mIdx, data) {
     stations: ['KNYC', 'KLGA', 'KJFK', 'KEWR', 'KTEB'],  // nearest first
     refreshMs: 15 * 60 * 1000,    // background refresh cadence
     windowH: 24,                  // scoring window (hours)
-    minObsHours: 20,              // station must report ≥ this many of the 24
-    minHours: 16,                 // need ≥ this many hours scored across all models
+    minObsHours: 12,              // a station "qualifies" at ≥ this coverage
+    minHours: 10,                 // absolute floor to score at all (fallback + per-model)
+    maxSlideH: 12,                // may end the window up to this many h before the
+                                  // newest report, to land on a better-covered stretch
   };
   const view = document.getElementById('accView');
   let last = null;   // {rows, obs:{station, win}, checkedAt, error?}
 
   const hourKey = d => d.toISOString().slice(0, 13) + ':00';   // UTC hour label
 
-  /* → {station, win:[{k, v}×24]} — the 24 hours ending at the newest reported
-     hour from the nearest station covering ≥ minObsHours of them. Missing hours
-     carry v:null (scored hours only); null if no station qualifies. */
+  /* Reads a station's obs into an hourly bucket map {hourKey → {t, v}} of the
+     latest non-null precipitationLastHour per hour. */
+  async function stationBuckets(st) {
+    const r = await fetch(
+      `https://api.weather.gov/stations/${st}/observations?limit=72`,
+      { headers: { accept: 'application/geo+json' } });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const feats = (await r.json()).features || [];
+    const buckets = {};
+    for (const f of feats) {
+      const p = f.properties;
+      const pv = p.precipitationLastHour;
+      if (!pv || pv.value == null) continue;    // null = not reported, skip
+      const t = new Date(p.timestamp);
+      const k = hourKey(new Date(Math.ceil(t.getTime() / 36e5) * 36e5));
+      if (!buckets[k] || t > buckets[k].t) buckets[k] = { t, v: pv.value };
+    }
+    return buckets;
+  }
+
+  /* Best 24-h window for one station: slides the end back up to maxSlideH from
+     the newest report and returns the end + coverage that maximise reported
+     hours (ties → most recent). null if the station reported nothing. */
+  function bestWindow(buckets) {
+    const keys = Object.keys(buckets).sort();
+    if (!keys.length) return null;
+    const newestMs = new Date(keys[keys.length - 1] + ':00Z').getTime();
+    let best = null;
+    for (const key of keys) {
+      const endMs = new Date(key + ':00Z').getTime();
+      if (endMs < newestMs - ACC.maxSlideH * 36e5) continue;   // too far back
+      let have = 0;
+      for (let h = 0; h < ACC.windowH; h++)
+        if (hourKey(new Date(endMs - h * 36e5)) in buckets) have++;
+      if (!best || have > best.have) best = { endMs, have };   // keys ascending → ties keep latest
+    }
+    return best;
+  }
+
+  function buildWin(buckets, endMs) {
+    const win = [];
+    for (let h = ACC.windowH - 1; h >= 0; h--) {
+      const k = hourKey(new Date(endMs - h * 36e5));
+      win.push({ k, v: k in buckets ? buckets[k].v : null });
+    }
+    return win;
+  }
+
+  /* → {station, win:[{k,v}×24], obsHours}. Prefers the NEAREST station that
+     reaches minObsHours (after sliding); if none do, falls back to the single
+     best-covered station provided it clears minHours; else null. */
   async function fetchObsWindow() {
+    let fallback = null;
     for (const st of ACC.stations) {
       try {
-        const r = await fetch(
-          `https://api.weather.gov/stations/${st}/observations?limit=72`,
-          { headers: { accept: 'application/geo+json' } });
-        if (!r.ok) continue;
-        const feats = (await r.json()).features || [];
-        const buckets = {};                       // hourKey → {t, v}
-        for (const f of feats) {
-          const p = f.properties;
-          const pv = p.precipitationLastHour;
-          if (!pv || pv.value == null) continue;  // null = not reported, skip
-          const t = new Date(p.timestamp);
-          const k = hourKey(new Date(Math.ceil(t.getTime() / 36e5) * 36e5));
-          if (!buckets[k] || t > buckets[k].t) buckets[k] = { t, v: pv.value };
-        }
-        const keys = Object.keys(buckets).sort();
-        if (!keys.length) continue;
-        const end = new Date(keys[keys.length - 1] + ':00Z');   // newest reported hour
-        const win = [];
-        let have = 0;
-        for (let h = ACC.windowH - 1; h >= 0; h--) {
-          const k = hourKey(new Date(end.getTime() - h * 36e5));
-          const has = k in buckets;
-          if (has) have++;
-          win.push({ k, v: has ? buckets[k].v : null });
-        }
-        if (have >= ACC.minObsHours) return { station: st, win, obsHours: have };
+        const buckets = await stationBuckets(st);
+        const bw = bestWindow(buckets);
+        if (!bw) continue;
+        if (!fallback || bw.have > fallback.obsHours)
+          fallback = { station: st, win: buildWin(buckets, bw.endMs), obsHours: bw.have };
+        if (bw.have >= ACC.minObsHours)          // nearest qualifying → take it
+          return { station: st, win: buildWin(buckets, bw.endMs), obsHours: bw.have };
       } catch (e) { /* station unreachable → try next */ }
     }
-    return null;
+    return (fallback && fallback.obsHours >= ACC.minHours) ? fallback : null;
   }
 
   /* → {HRRR:[...], GFS:[...], ECMWF:[...]} aligned to win's hour keys. */
@@ -1451,8 +1488,10 @@ function renderModelInto(tbody, mIdx, data) {
     const url = 'https://previous-runs-api.open-meteo.com/v1/forecast' +
       `?latitude=${COORDS.lat}&longitude=${COORDS.lon}` +
       `&models=${MODELS.map(m => m.id).join(',')}` +
+      // past_hours must cover a window that may end up to maxSlideH before now
+      // and reach 24 h before that end (≈ now−36 h) → request 48 h to be safe.
       '&hourly=precipitation_previous_day1' +
-      '&precipitation_unit=mm&timezone=UTC&past_hours=30&forecast_hours=1';
+      '&precipitation_unit=mm&timezone=UTC&past_hours=48&forecast_hours=1';
     const r = await fetch(url);
     if (!r.ok) throw new Error('previous-runs HTTP ' + r.status);
     const d = await r.json();

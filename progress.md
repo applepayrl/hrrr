@@ -1,5 +1,16 @@
 # progress.md — July 6 session
 
+## ROUND 5 (fifth user message) — accuracy panel "no station reported enough" error
+Diagnosis (live): required ≥20/24 hrs from one station anchored at its newest report; measured coverage KNYC 17/24, KJFK 14/24, KLGA 5/24, KEWR 4/24, KTEB 0/24 → none qualify → error. Causes: (1) threshold 20 > reality (best 17); (2) Central Park null-on-dry-hours; (3) high-freq stations (LGA/EWR) blow the 72-obs limit in ~5h; (4) TEB never reports precip. Sliding the window back 6h lifts KNYC to 20/24.
+User chose: A+B (lower bar + slide + pick best-covered station), NOT composite/farther/coarser.
+Implemented:
+- ACC: minObsHours 20→12 (qualify), minHours 16→10 (score floor + fallback accept), maxSlideH=12.
+- Refactored fetchObsWindow → stationBuckets() + bestWindow() (slides end back ≤maxSlideH to max coverage, ties→latest) + buildWin(). Selection: NEAREST station reaching minObsHours wins; else single best-covered station if ≥minHours; else null.
+- fetchPrevRuns past_hours 30→48 (window can now end ≤12h before now → start ≈now−36h; 30h was too short and would null-out the earliest hours).
+- Updated header comment + footer already shows "N h scored" and the actual window.
+Verified live: KNYC selected, window slid to end Mon 22:00 local (Tue 02:00Z), 20 h scored, ECMWF 42 / GFS 39 / HRRR 26, no error, no console errors, swipe/cycle still fine.
+Residual: on a bone-dry stretch where even KNYC+fallbacks report <10 non-null hrs it can still error; offered E (composite stations) as the next safeguard if it recurs.
+
 ## ROUND 4 (fourth user message)
 Tasks: (1) make swipe FLUID (was choppy); (2) fix accuracy scoring — more spread, mathematically/empirically grounded, 0% only for total miss; (3) explain the 24h obs omissions + decide whether to revise the period.
 
