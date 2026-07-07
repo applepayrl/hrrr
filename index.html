@@ -178,11 +178,10 @@
   .status.err { color: #f87171; }
 
   /* ===================== Radar map ===================== */
-  /* Round radar button, top-right of the (centered, sticky) header. */
-  #radarBtn {
+  /* Round header buttons: radar top-right, info (accuracy) top-left. */
+  #radarBtn, #infoBtn {
     position: absolute;
     top: calc(env(safe-area-inset-top) + 12px);
-    right: 14px;
     width: 38px; height: 38px;
     display: flex; align-items: center; justify-content: center;
     padding: 0;
@@ -192,8 +191,62 @@
     color: #cbd5e1;
     cursor: pointer;
   }
-  #radarBtn:active { background: rgba(255,255,255,0.18); }
-  #radarBtn svg { width: 22px; height: 22px; display: block; }
+  #radarBtn { right: 14px; }
+  #infoBtn  { left: 14px; }
+  #radarBtn:active, #infoBtn:active { background: rgba(255,255,255,0.18); }
+  #radarBtn svg, #infoBtn svg { width: 22px; height: 22px; display: block; }
+
+  /* ============== Forecast-accuracy panel (info button) ============== */
+  #accView {
+    display: none; position: fixed; inset: 0; z-index: 1000;
+    background: rgba(0,0,0,0.92);
+    -webkit-backdrop-filter: blur(10px); backdrop-filter: blur(10px);
+    overflow-y: auto;
+  }
+  #accView.open { display: block; }
+  #accClose {
+    position: absolute; z-index: 1002;
+    top: calc(env(safe-area-inset-top) + 12px);
+    right: calc(env(safe-area-inset-right) + 12px);
+    width: 40px; height: 40px;
+    display: flex; align-items: center; justify-content: center;
+    border-radius: 50%;
+    background: rgba(255,255,255,0.08);
+    border: 1px solid rgba(255,255,255,0.25);
+    color: #fff; font-size: 20px; line-height: 1; cursor: pointer;
+  }
+  #accCard {
+    max-width: 420px;
+    margin: calc(env(safe-area-inset-top) + 76px) auto 40px;
+    padding: 0 20px;
+  }
+  #accCard h2 {
+    font-size: 17px; font-weight: 700; letter-spacing: -0.01em;
+    margin: 0 0 4px;
+  }
+  #accCard .acc-sub {
+    font-size: 12px; color: #8aa0bf; margin: 0 0 18px; line-height: 1.5;
+  }
+  .acc-row { display: flex; align-items: center; gap: 12px; margin: 14px 0; }
+  .acc-row b { width: 64px; font-size: 15px; font-weight: 600; }
+  .acc-bar {
+    flex: 1; height: 10px; border-radius: 5px;
+    background: rgba(255,255,255,0.08); overflow: hidden;
+  }
+  .acc-bar > i {
+    display: block; height: 100%; border-radius: 5px;
+    background: linear-gradient(90deg, #2563eb, #38bdf8);
+  }
+  .acc-row span {
+    width: 48px; text-align: right;
+    font-size: 15px; font-weight: 700; font-variant-numeric: tabular-nums;
+  }
+  #accFoot {
+    margin-top: 22px; padding-top: 12px;
+    border-top: 1px solid rgba(255,255,255,0.1);
+    font-size: 12px; color: #8aa0bf; line-height: 1.7;
+  }
+  .acc-status { color: #8aa0bf; font-size: 14px; padding: 24px 0; }
 
   /* Full-screen radar overlay (hidden until opened). */
   #radarView { display: none; position: fixed; inset: 0; z-index: 1000; background: #000; }
@@ -255,6 +308,16 @@
 <body>
 
 <header>
+  <button id="infoBtn" aria-label="Rain forecast accuracy, past 6 hours">
+    <svg viewBox="0 0 24 24">
+      <circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="1.6"/>
+      <circle cx="12" cy="7.6" r="1.35" fill="currentColor"/>
+      <path d="M10.4 10.8 h1.9 v5.4 h1.5" fill="none" stroke="currentColor"
+            stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/>
+      <path d="M10.4 16.2 h1.9" fill="none" stroke="currentColor"
+            stroke-width="1.7" stroke-linecap="round"/>
+    </svg>
+  </button>
   <div class="loc" id="title" onclick="cycleModel()" role="button"
        aria-label="Cycle forecast model">HRRR · 10065 Upper East Side</div>
   <div class="upd" id="updated">Loading…</div>
@@ -284,6 +347,18 @@
 </main>
 
 <div id="rainInfo"></div>
+
+<div id="accView">
+  <button id="accClose" aria-label="Close accuracy panel">✕</button>
+  <div id="accCard">
+    <h2>Rain forecast accuracy</h2>
+    <p class="acc-sub">How close each model's run from ~24 h earlier came to the
+      rain actually measured over the most recent 6 observed hours.
+      100% = every hour predicted exactly.</p>
+    <div id="accBody"><div class="acc-status">Scoring…</div></div>
+    <div id="accFoot"></div>
+  </div>
+</div>
 
 <div id="radarView">
   <div id="radarMap"></div>
@@ -329,7 +404,6 @@ const ENS_EXTRA = [
 const ENS_URL = buildUrl(ENS_EXTRA.map(m => m.id).join(','), ['precipitation']);
 // Fixed member order for the ensemble / long-press readout.
 const ENS_ORDER = ['HRRR', 'GFS', 'JMA', 'ECMWF', 'ICON', 'GEM'];
-const PRECIP_MIN = 0.15;  // mm: ensemble values below this render as nothing (hides trace/drizzle)
 
 /* ===================== Cloud palette ===================== */
 /* light → white front → medium (snow) → dark (overcast/storm) */
@@ -602,19 +676,21 @@ function spreadColor(spread, val) {
 }
 
 /* Renders the precip cell <td>: the number is the SELECTED model's own value
-   (own), colored by the 6-model ensemble spread. The cell carries the full
-   per-model breakdown + blend for the long-press readout. */
-function rainTd(ens, own) {
+   rounded to 1 decimal (mm — the SAME value that drives the sky icon, so the
+   two always agree), colored by the 6-model ensemble spread. No lower-bound
+   cutoff: anything that doesn't round to 0.0 is shown. The cell carries the
+   full per-model breakdown + blend for the long-press readout. */
+function rainTd(ens, mm) {
   if (ens == null) return `<td class="cell-rain"></td>`;   // no model data at all
   const data = ens.members
     .map(m => `${m.name} ${m.v == null ? '—' : m.v.toFixed(1)}`).join('|');
   const attrs = `data-ens="${data}" data-val="${ens.val.toFixed(1)}"`;
   // Dry hours show no number but stay long-pressable, so the other models and
   // the blend are still inspectable even when this model says nothing.
-  if (own == null || own < PRECIP_MIN) return `<td class="cell-rain" ${attrs}></td>`;
-  const color = spreadColor(ens.spread, own);
+  if (mm == null || mm === 0) return `<td class="cell-rain" ${attrs}></td>`;
+  const color = spreadColor(ens.spread, mm);
   return `<td class="cell-rain" ${attrs}>` +
-         `<span style="color:${color}">${own.toFixed(1)}</span></td>`;
+         `<span style="color:${color}">${mm.toFixed(1)}</span></td>`;
 }
 
 /* ===================== Time ===================== */
@@ -700,8 +776,7 @@ async function refresh() {
 function updateHeader() {
   const now = new Date();
   const t = now.toLocaleTimeString('en-US', {hour:'numeric', minute:'2-digit'});
-  document.getElementById('updated').textContent =
-    `Updated ${t} · blend on long-press`;
+  document.getElementById('updated').textContent = `Updated ${t}`;
 }
 
 function render(data) {
@@ -763,9 +838,13 @@ function render(data) {
     const members = ENS_ORDER.map(name => ({ name, v: byName[name] }));
     const ens = ensemble(members);
 
-    const eff = effectiveCloud(ccL[i], ccM[i], ccH[i], pr[i], wc[i]);
+    // ONE value drives the mm cell AND the icon's rain: the selected model's
+    // precip rounded to the displayed decimal. So a visible number always comes
+    // with a wet icon, and a blank cell with a dry one (fog excepted).
+    const mm = pr[i] == null ? null : Math.round(pr[i] * 10) / 10;
+    const eff = effectiveCloud(ccL[i], ccM[i], ccH[i], mm, wc[i]);
     const cb = cloudBand(eff);
-    const rb = rainBand(pr[i]);
+    const rb = rainBand(mm);
     const isDay = day[i] === 1;
     const iconKey = pickIcon(cb, rb, isDay, wc[i]);
 
@@ -775,7 +854,7 @@ function render(data) {
       `<td class="cell-hour">${hourBand(ts)}</td>` +
       `<td class="cell-temp">${tempDisplay(temp[i])}</td>` +
       `<td class="cell-sky">${ICONS[iconKey]}</td>` +
-      rainTd(ens, pr[i]) +
+      rainTd(ens, mm) +
       `<td class="cell-wind">${windIcon(wd[i], Math.round(ws[i]))}</td>`;
     tbody.appendChild(tr);
     rowsShown++;
@@ -805,13 +884,11 @@ function render(data) {
   function pt(e) { return (e.touches && e.touches[0]) || (e.changedTouches && e.changedTouches[0]) || e; }
   function show(td) {
     // data-ens = "HRRR 2.5|GFS 1.2|JMA 0.0|..." ; data-val = blended result.
-    // The selected model's value is already visible in the row, so the card
-    // shows only the OTHER five models plus the blend.
+    // Always all 6 models + blend, whatever model the rows are showing.
     const lines = td.dataset.ens.split('|').map(p => {
       const i = p.lastIndexOf(' ');
-      return { name: p.slice(0, i), val: p.slice(i + 1) };
-    }).filter(m => m.name !== currentModel().name)
-      .map(m => `<div><b>${m.name}</b><span>${m.val}</span></div>`).join('');
+      return `<div><b>${p.slice(0, i)}</b><span>${p.slice(i + 1)}</span></div>`;
+    }).join('');
     box.innerHTML = `<div class="ri-grid">${lines}</div>` +
       `<div class="ri-blend"><b>Blend</b><span>${td.dataset.val} mm</span></div>`;
     box.style.display = 'block';
@@ -1120,6 +1197,163 @@ function render(data) {
 
   // Debug hooks for verification (deterministic test of the motion math).
   window.__radar = { estimateShift, resMeters, lonLatToGlobalPixel, frameMask, computeArrow, loadRadar, drawArrow };
+})();
+
+/* ===================== Forecast accuracy (info panel) ===================== */
+/* Scores how well each selectable model (HRRR/GFS/ECMWF) forecast the rain of
+   the most recent 6 OBSERVED hours near 10065.
+
+   Actual rain: NWS station obs (precipitationLastHour, mm), nearest first —
+   KNYC (Central Park, ~2 km from 10065) then LGA/JFK/EWR/TEB. A METAR value
+   stamped ~HH:51 covers the hour ending ≈(HH+1):00, which is exactly
+   Open-Meteo's convention (value at T = precip over the hour ending at T), so
+   each obs is bucketed to its ceil-hour and the latest report per bucket wins.
+   If the newest hours are missing we slide the 6-hour window back (most recent
+   6 available), and if a station can't fill a window at all we fall to the next.
+
+   Forecast: each model's run from ~24 h earlier (Open-Meteo previous-runs API,
+   precipitation_previous_day1 — its finest run offset; per-user decision this
+   replaces the unavailable "run from 6 h ago"). Same basis for all 3 models.
+
+   Score: 100·e^(−MAE/0.5 mm), where MAE is the mean |forecast−actual| over the
+   6 hours. Perfect hourly prediction ⇒ MAE 0 ⇒ 100%; monotonically decreasing
+   and never negative as forecasts stray. 0.5 mm/h of average miss ⇒ 37%. */
+(function () {
+  const ACC = {
+    stations: ['KNYC', 'KLGA', 'KJFK', 'KEWR', 'KTEB'],  // nearest first
+    scaleMM: 0.5,                 // e-folding MAE scale for the score
+    refreshMs: 15 * 60 * 1000,    // background refresh cadence
+    minHours: 4,                  // a model needs ≥ this many scoreable hours
+  };
+  const view = document.getElementById('accView');
+  let last = null;   // {rows, obs:{station, win}, checkedAt, error?}
+
+  const hourKey = d => d.toISOString().slice(0, 13) + ':00';   // UTC hour label
+
+  /* → {station, win:[{k, v}×6]} — the most recent 6 consecutive observed hours
+     from the nearest station that can fill a window; null if none can. */
+  async function fetchObsWindow() {
+    for (const st of ACC.stations) {
+      try {
+        const r = await fetch(
+          `https://api.weather.gov/stations/${st}/observations?limit=36`,
+          { headers: { accept: 'application/geo+json' } });
+        if (!r.ok) continue;
+        const feats = (await r.json()).features || [];
+        const buckets = {};                       // hourKey → {t, v}
+        for (const f of feats) {
+          const p = f.properties;
+          const pv = p.precipitationLastHour;
+          if (!pv || pv.value == null) continue;  // null = not reported, skip
+          const t = new Date(p.timestamp);
+          const k = hourKey(new Date(Math.ceil(t.getTime() / 36e5) * 36e5));
+          if (!buckets[k] || t > buckets[k].t) buckets[k] = { t, v: pv.value };
+        }
+        const keys = Object.keys(buckets).sort();
+        // Newest possible window first; slide back if recent hours are missing.
+        for (let e = keys.length - 1; e >= 5; e--) {
+          const end = new Date(keys[e] + ':00Z');
+          const win = [];
+          for (let h = 5; h >= 0; h--) {
+            const k = hourKey(new Date(end.getTime() - h * 36e5));
+            if (!(k in buckets)) { win.length = 0; break; }
+            win.push({ k, v: buckets[k].v });
+          }
+          if (win.length === 6) return { station: st, win };
+        }
+      } catch (e) { /* station unreachable → try next */ }
+    }
+    return null;
+  }
+
+  /* → {HRRR:[...], GFS:[...], ECMWF:[...]} aligned to win's hour keys. */
+  async function fetchPrevRuns(win) {
+    const url = 'https://previous-runs-api.open-meteo.com/v1/forecast' +
+      `?latitude=${COORDS.lat}&longitude=${COORDS.lon}` +
+      `&models=${MODELS.map(m => m.id).join(',')}` +
+      '&hourly=precipitation_previous_day1' +
+      '&precipitation_unit=mm&timezone=UTC&past_hours=30&forecast_hours=1';
+    const r = await fetch(url);
+    if (!r.ok) throw new Error('previous-runs HTTP ' + r.status);
+    const d = await r.json();
+    const idx = {};
+    d.hourly.time.forEach((t, i) => { idx[t] = i; });
+    const out = {};
+    MODELS.forEach(m => {
+      const arr = d.hourly['precipitation_previous_day1_' + m.id];
+      out[m.name] = win.map(w => idx[w.k] == null ? null : arr[idx[w.k]]);
+    });
+    return out;
+  }
+
+  function scoreModel(fc, win) {
+    let sum = 0, n = 0;
+    for (let i = 0; i < win.length; i++) {
+      if (fc[i] == null) continue;
+      sum += Math.abs(fc[i] - win[i].v); n++;
+    }
+    if (n < ACC.minHours) return null;
+    const mae = sum / n;
+    return { pct: Math.round(100 * Math.exp(-mae / ACC.scaleMM)), mae, n };
+  }
+
+  async function refreshAcc() {
+    try {
+      const obs = await fetchObsWindow();
+      if (!obs) throw new Error('no station reported 6 h of rainfall');
+      const prev = await fetchPrevRuns(obs.win);
+      const rows = MODELS
+        .map(m => ({ name: m.name, s: scoreModel(prev[m.name], obs.win) }))
+        .sort((a, b) => (b.s ? b.s.pct : -1) - (a.s ? a.s.pct : -1));
+      last = { rows, obs, checkedAt: new Date() };
+    } catch (e) {
+      // Keep stale scores (and their honest "Refreshed" time) if we have them.
+      if (!last || !last.rows) last = { error: e.message };
+      console.warn('accuracy refresh:', e);
+    }
+    renderAcc();
+  }
+
+  function renderAcc() {
+    const body = document.getElementById('accBody');
+    const foot = document.getElementById('accFoot');
+    if (!last || !last.rows) {
+      body.innerHTML = `<div class="acc-status">Couldn't score: ${last ? last.error : '…'}</div>`;
+      foot.textContent = '';
+      return;
+    }
+    body.innerHTML = last.rows.map(r => {
+      const pct = r.s ? r.s.pct : null;
+      return `<div class="acc-row"><b>${r.name}</b>` +
+        `<div class="acc-bar"><i style="width:${pct == null ? 0 : pct}%"></i></div>` +
+        `<span>${pct == null ? '—' : pct + '%'}</span></div>`;
+    }).join('');
+    const fmt = d => d.toLocaleTimeString('en-US', {hour: 'numeric', minute: '2-digit'});
+    const start = new Date(new Date(last.obs.win[0].k + ':00Z').getTime() - 36e5);
+    const end   = new Date(last.obs.win[5].k + ':00Z');
+    foot.innerHTML =
+      `Observed rain: ${fmt(start)} – ${fmt(end)} · station ${last.obs.station}<br>` +
+      `Forecasts: each model's run from ~24 h earlier<br>` +
+      `Score = 100·e<sup>−MAE/0.5 mm</sup> · Refreshed ${fmt(last.checkedAt)}`;
+  }
+
+  document.getElementById('infoBtn').addEventListener('click', () => {
+    view.classList.add('open');
+    refreshAcc();                        // freshen on open, too
+  });
+  document.getElementById('accClose').addEventListener('click',
+    () => view.classList.remove('open'));
+
+  // Refreshes in the background while the app is open, panel visible or not.
+  refreshAcc();
+  setInterval(refreshAcc, ACC.refreshMs);
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden) refreshAcc();
+  });
+
+  // Debug hooks for verification.
+  window.__acc = { refreshAcc, fetchObsWindow, fetchPrevRuns, scoreModel,
+                   get last() { return last; } };
 })();
 
 /* ===================== Boot ===================== */

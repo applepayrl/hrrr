@@ -1,5 +1,36 @@
 # progress.md — July 6 session
 
+## ROUND 2 (second user message)
+Tasks: (1) drop "blend on long-press" subtitle; (2) long-press card shows ALL 6 models + blend, confirm blend = average of 6 (finding: it's the mean of all 6 EXCEPT a wild-outlier top value >2×second+1mm is dropped — kept deliberately, disclosed to user); (3) drop rainfall lower-bound cutoffs (PRECIP_MIN removed; blank iff value rounds to 0.0); (4) icon rain state driven by the SAME rounded mm as the cell (fog exception); (5) info (ⓘ) button left of title → accuracy panel: HRRR/GFS/ECMWF scored 0–100% on past-6-observed-hours rain vs NWS obs (KNYC first, then LGA/JFK/EWR/TEB; most recent 6 consecutive reported hours), forecasts = previous_day1 runs (USER DECISION: 24h-ago runs, since no API serves 6h-ago runs), score = 100·e^(−MAE/0.5mm), sorted desc, X to close, background refresh 15 min + on open + on visibilitychange, footer shows obs window/station/basis/refreshed time.
+Memory file radar-feature.md updated (30-min arrow, poll/stamp) with user permission.
+
+Round-2 criteria:
+- C12 subtitle: header reads "Updated h:mm" only.
+- C13 long-press card lists all 6 models (ENS_ORDER) + Blend under every selected model.
+- C14 blend math: card Blend == outlier-rejected mean recomputed manually from the 6 values.
+- C15 no cutoff: cell blank ⇔ model mm rounds to 0.0; any 0.1+ displays.
+- C16 icon⇔cell agreement for ALL rows × 3 models: number present ⇔ wet icon (rain/snow/thunder marks), fog exempt.
+- C17 ⓘ opens panel, ✕ closes, returns to main screen.
+- C18 scores sorted desc, each 0–100 or —; recomputed-by-hand pct matches for all 3 models.
+- C19 footer shows obs window (start–end local), station id, 24h-run basis, refreshed time.
+- C20 background: refreshAcc interval (15 min) registered at boot; refresh on visibilitychange.
+- C21 obs window = 6 consecutive hourly buckets; METAR :51 report bucketed to ceil-hour (matches Open-Meteo hour-ending convention).
+- C9r no console errors.
+Test method: preview_eval against __acc hooks + DOM; manual recompute in eval.
+
+Round-2 results (all PASS, live data):
+- C12 "Updated 10:20 PM" only ✓. C13 all 6 names + Blend ✓. C14 card 0.1 mm == manual outlier-rejected mean ✓.
+- C15/C16 swept ALL rows × 3 models: zero mismatches (HRRR 0 wet rows, GFS 12, ECMWF 14; number ⇔ wet icon everywhere) ✓.
+- C17 open/✕ close ✓. C18 live scores ECMWF 39 / GFS 21 / HRRR 20, exact match to manual recompute, sorted desc ✓ (real rain evening: KNYC 0.5,0,0.8,1.3,1.3,0 mm).
+- C19 foot: "Observed rain: 4:00 PM – 10:00 PM · station KNYC / run from ~24 h earlier / Score = 100·e^−MAE/0.5mm · Refreshed" ✓.
+- C20 refreshAcc tick updates checkedAt, keeps rows; interval + visibilitychange wired at boot ✓. C21 six consecutive UTC hour keys ✓. C9r no console errors ✓.
+- Round-2 committed + pushed; Pages build triggered manually (still doesn't auto-build).
+
+Design notes round 2:
+- Blend stays the OUTLIER-REJECTED mean (not plain average) — top value dropped only if > 2×second+1mm; disclosed to user.
+- Wet-icon DOM detectors used in tests: rain stroke #38bdf8, snow stroke #f1f5f9, lightning #f59e0b, fog stroke #cbd5e1 (exempt).
+- __acc debug hooks: refreshAcc, fetchObsWindow, fetchPrevRuns, scoreModel, last getter.
+
 ## Task list (from user)
 0. Commit current state as "July 6 stable" → DONE as git tag `july-6-stable` (tree was clean; assumption flagged to user).
 1. Confirm radar arrow direction = precip motion, length = 30-min drift distance.
