@@ -7,6 +7,8 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="HRRR 10065">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<link rel="icon" type="image/png" sizes="180x180" href="icon-180.png">
 <title>HRRR · 10065</title>
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
@@ -353,7 +355,7 @@
   <div id="accCard">
     <h2>Rain forecast accuracy</h2>
     <p class="acc-sub">How close each model's run from ~24 h earlier came to the
-      rain actually measured over the most recent 6 observed hours.
+      rain actually measured over the most recent 24 observed hours.
       100% = every hour predicted exactly.</p>
     <div id="accBody"><div class="acc-status">Scoring…</div></div>
     <div id="accFoot"></div>
@@ -403,7 +405,7 @@ const ENS_EXTRA = [
 ];
 const ENS_URL = buildUrl(ENS_EXTRA.map(m => m.id).join(','), ['precipitation']);
 // Fixed member order for the ensemble / long-press readout.
-const ENS_ORDER = ['HRRR', 'GFS', 'JMA', 'ECMWF', 'ICON', 'GEM'];
+const ENS_ORDER = ['HRRR', 'GFS', 'ECMWF', 'ICON', 'GEM', 'JMA'];
 
 /* ===================== Cloud palette ===================== */
 /* light → white front → medium (snow) → dark (overcast/storm) */
@@ -728,20 +730,32 @@ function toggleTempUnit() {
 }
 
 /* ===================== Model selection ===================== */
-let modelIdx = Math.max(0, MODELS.findIndex(m =>
-  m.name === (typeof localStorage !== 'undefined' && localStorage.getItem('model'))));
+let modelIdx = 0;                  // always open on HRRR (deliberate: no persistence)
 function currentModel() { return MODELS[modelIdx]; }
 function updateTitle() {
   const name = currentModel().name;
   document.getElementById('title').textContent = `${name} · 10065 Upper East Side`;
   document.title = `${name} · 10065`;
 }
-function cycleModel() {
-  modelIdx = (modelIdx + 1) % MODELS.length;
-  try { localStorage.setItem('model', currentModel().name); } catch (e) {}
+/* dir: +1 = forward (title tap, swipe left), −1 = back (swipe right) */
+function cycleModel(dir = 1) {
+  modelIdx = (modelIdx + dir + MODELS.length) % MODELS.length;
   updateTitle();
-  if (lastData) { render(lastData); updateHeader(); }
+  if (lastData) { render(lastData); updateHeader(); animateSwap(dir); }
   refresh();   // instant re-render from cache above; also re-pull latest data
+}
+/* Quick slide-in of the table from the swipe direction — keeps model switches
+   feeling physical without a heavy carousel. */
+function animateSwap(dir) {
+  const el = document.getElementById('table');
+  el.style.transition = 'none';
+  el.style.transform = `translateX(${dir * -26}px)`;
+  el.style.opacity = '0.25';
+  requestAnimationFrame(() => requestAnimationFrame(() => {
+    el.style.transition = 'transform 170ms ease-out, opacity 170ms ease-out';
+    el.style.transform = 'translateX(0)';
+    el.style.opacity = '1';
+  }));
 }
 
 /* ===================== Render ===================== */
@@ -922,6 +936,31 @@ function render(data) {
   document.addEventListener('mouseup', hide);
   rows.addEventListener('mouseleave', hide);
   window.__hideRainInfo = hide;   // render() dismisses on table re-render
+})();
+
+/* ===================== Swipe to cycle models ===================== */
+/* Horizontal swipe anywhere over the rows cycles HRRR ⇄ GFS ⇄ ECMWF.
+   Listeners are passive so vertical scrolling stays native-smooth on iOS; a
+   gesture only counts as a swipe when it's fast, long enough, and clearly more
+   horizontal than vertical (2:1), so scrolling never falsely triggers. */
+(function () {
+  const area = document.querySelector('main');
+  let x0 = 0, y0 = 0, t0 = 0, tracking = false;
+  area.addEventListener('touchstart', e => {
+    tracking = e.touches.length === 1;      // ignore multi-touch (pinch etc.)
+    if (!tracking) return;
+    x0 = e.touches[0].clientX; y0 = e.touches[0].clientY; t0 = Date.now();
+  }, { passive: true });
+  area.addEventListener('touchend', e => {
+    if (!tracking) return;
+    tracking = false;
+    const t = e.changedTouches[0];
+    const dx = t.clientX - x0, dy = t.clientY - y0;
+    if (Date.now() - t0 > 600) return;                    // too slow — a drag
+    if (Math.abs(dx) < 60) return;                        // too short
+    if (Math.abs(dx) < 2 * Math.abs(dy)) return;          // mostly vertical
+    cycleModel(dx < 0 ? 1 : -1);   // swipe left → next model, right → previous
+  }, { passive: true });
 })();
 
 /* ===================== Radar map ===================== */
@@ -1201,42 +1240,46 @@ function render(data) {
 
 /* ===================== Forecast accuracy (info panel) ===================== */
 /* Scores how well each selectable model (HRRR/GFS/ECMWF) forecast the rain of
-   the most recent 6 OBSERVED hours near 10065.
+   the most recent 24 OBSERVED hours near 10065.
 
    Actual rain: NWS station obs (precipitationLastHour, mm), nearest first —
    KNYC (Central Park, ~2 km from 10065) then LGA/JFK/EWR/TEB. A METAR value
    stamped ~HH:51 covers the hour ending ≈(HH+1):00, which is exactly
    Open-Meteo's convention (value at T = precip over the hour ending at T), so
    each obs is bucketed to its ceil-hour and the latest report per bucket wins.
-   If the newest hours are missing we slide the 6-hour window back (most recent
-   6 available), and if a station can't fill a window at all we fall to the next.
+   The window is the 24 hours ending at the newest reported hour; a few missing
+   hourly reports are tolerated (scored hours only), but a station must cover
+   ≥ minObsHours of the window or we fall through to the next station.
 
    Forecast: each model's run from ~24 h earlier (Open-Meteo previous-runs API,
    precipitation_previous_day1 — its finest run offset; per-user decision this
    replaces the unavailable "run from 6 h ago"). Same basis for all 3 models.
 
    Score: 100·e^(−MAE/0.5 mm), where MAE is the mean |forecast−actual| over the
-   6 hours. Perfect hourly prediction ⇒ MAE 0 ⇒ 100%; monotonically decreasing
-   and never negative as forecasts stray. 0.5 mm/h of average miss ⇒ 37%. */
+   scored hours. Perfect hourly prediction ⇒ MAE 0 ⇒ 100%; monotonically
+   decreasing and never negative as forecasts stray. 0.5 mm/h avg miss ⇒ 37%. */
 (function () {
   const ACC = {
     stations: ['KNYC', 'KLGA', 'KJFK', 'KEWR', 'KTEB'],  // nearest first
     scaleMM: 0.5,                 // e-folding MAE scale for the score
     refreshMs: 15 * 60 * 1000,    // background refresh cadence
-    minHours: 4,                  // a model needs ≥ this many scoreable hours
+    windowH: 24,                  // scoring window (hours)
+    minObsHours: 20,              // station must report ≥ this many of the 24
+    minHours: 16,                 // a model needs ≥ this many scoreable hours
   };
   const view = document.getElementById('accView');
   let last = null;   // {rows, obs:{station, win}, checkedAt, error?}
 
   const hourKey = d => d.toISOString().slice(0, 13) + ':00';   // UTC hour label
 
-  /* → {station, win:[{k, v}×6]} — the most recent 6 consecutive observed hours
-     from the nearest station that can fill a window; null if none can. */
+  /* → {station, win:[{k, v}×24]} — the 24 hours ending at the newest reported
+     hour from the nearest station covering ≥ minObsHours of them. Missing hours
+     carry v:null (scored hours only); null if no station qualifies. */
   async function fetchObsWindow() {
     for (const st of ACC.stations) {
       try {
         const r = await fetch(
-          `https://api.weather.gov/stations/${st}/observations?limit=36`,
+          `https://api.weather.gov/stations/${st}/observations?limit=72`,
           { headers: { accept: 'application/geo+json' } });
         if (!r.ok) continue;
         const feats = (await r.json()).features || [];
@@ -1250,17 +1293,17 @@ function render(data) {
           if (!buckets[k] || t > buckets[k].t) buckets[k] = { t, v: pv.value };
         }
         const keys = Object.keys(buckets).sort();
-        // Newest possible window first; slide back if recent hours are missing.
-        for (let e = keys.length - 1; e >= 5; e--) {
-          const end = new Date(keys[e] + ':00Z');
-          const win = [];
-          for (let h = 5; h >= 0; h--) {
-            const k = hourKey(new Date(end.getTime() - h * 36e5));
-            if (!(k in buckets)) { win.length = 0; break; }
-            win.push({ k, v: buckets[k].v });
-          }
-          if (win.length === 6) return { station: st, win };
+        if (!keys.length) continue;
+        const end = new Date(keys[keys.length - 1] + ':00Z');   // newest reported hour
+        const win = [];
+        let have = 0;
+        for (let h = ACC.windowH - 1; h >= 0; h--) {
+          const k = hourKey(new Date(end.getTime() - h * 36e5));
+          const has = k in buckets;
+          if (has) have++;
+          win.push({ k, v: has ? buckets[k].v : null });
         }
+        if (have >= ACC.minObsHours) return { station: st, win, obsHours: have };
       } catch (e) { /* station unreachable → try next */ }
     }
     return null;
@@ -1289,7 +1332,7 @@ function render(data) {
   function scoreModel(fc, win) {
     let sum = 0, n = 0;
     for (let i = 0; i < win.length; i++) {
-      if (fc[i] == null) continue;
+      if (fc[i] == null || win[i].v == null) continue;   // need both sides
       sum += Math.abs(fc[i] - win[i].v); n++;
     }
     if (n < ACC.minHours) return null;
@@ -1300,7 +1343,7 @@ function render(data) {
   async function refreshAcc() {
     try {
       const obs = await fetchObsWindow();
-      if (!obs) throw new Error('no station reported 6 h of rainfall');
+      if (!obs) throw new Error('no station reported enough of the past 24 h');
       const prev = await fetchPrevRuns(obs.win);
       const rows = MODELS
         .map(m => ({ name: m.name, s: scoreModel(prev[m.name], obs.win) }))
@@ -1328,13 +1371,18 @@ function render(data) {
         `<div class="acc-bar"><i style="width:${pct == null ? 0 : pct}%"></i></div>` +
         `<span>${pct == null ? '—' : pct + '%'}</span></div>`;
     }).join('');
-    const fmt = d => d.toLocaleTimeString('en-US', {hour: 'numeric', minute: '2-digit'});
-    const start = new Date(new Date(last.obs.win[0].k + ':00Z').getTime() - 36e5);
-    const end   = new Date(last.obs.win[5].k + ':00Z');
+    // Window: hour ENDING at win[0].k spans (win[0].k − 1h) → win[last].k.
+    const fmtDT = d => d.toLocaleString('en-US',
+      {weekday: 'short', hour: 'numeric', minute: '2-digit'});
+    const fmtT  = d => d.toLocaleTimeString('en-US', {hour: 'numeric', minute: '2-digit'});
+    const w = last.obs.win;
+    const start = new Date(new Date(w[0].k + ':00Z').getTime() - 36e5);
+    const end   = new Date(w[w.length - 1].k + ':00Z');
     foot.innerHTML =
-      `Observed rain: ${fmt(start)} – ${fmt(end)} · station ${last.obs.station}<br>` +
-      `Forecasts: each model's run from ~24 h earlier<br>` +
-      `Score = 100·e<sup>−MAE/0.5 mm</sup> · Refreshed ${fmt(last.checkedAt)}`;
+      `Observed rain: ${fmtDT(start)} – ${fmtDT(end)}<br>` +
+      `Station ${last.obs.station} · ${last.obs.obsHours}/24 h reported · ` +
+      `runs from ~24 h earlier<br>` +
+      `Score = 100·e<sup>−MAE/0.5 mm</sup> · Refreshed ${fmtT(last.checkedAt)}`;
   }
 
   document.getElementById('infoBtn').addEventListener('click', () => {
@@ -1358,7 +1406,7 @@ function render(data) {
 
 /* ===================== Boot ===================== */
 updateTempHeader();   // reflect persisted unit on first paint
-updateTitle();        // reflect persisted model on first paint
+updateTitle();        // paint the default model (HRRR) into the header
 refresh();
 setInterval(refresh, REFRESH_MS);
 document.addEventListener('visibilitychange', () => {

@@ -1,5 +1,28 @@
 # progress.md — July 6 session
 
+## ROUND 3 (third user message)
+Tasks: (1) long-press card order fixed to HRRR,GFS,ECMWF,ICON,GEM,JMA (ENS_ORDER reordered); (2) accuracy panel now scores the past 24 OBSERVED hours (windowH=24, minObsHours=20, minHours=16), tolerating missing hourly reports (score only hours where BOTH obs and forecast exist); (3) swipe left/right anywhere on rows cycles the 3 active models — passive touch listeners on <main>, thresholds: <600ms, |dx|>60px, |dx|>2|dy|; swipe-left=next, swipe-right=prev; brief translateX+opacity slide via animateSwap; (4) app always opens on HRRR (modelIdx=0, dropped localStorage persistence); (5) app icon generated via PIL script (scratchpad/make_icon.py) → apple-touch-icon.png (512) + icon-180.png in project root; sun-behind-cloud + cyan raindrops on blue→navy gradient; wired into <head>.
+
+Round-3 criteria:
+- C22 long-press order == HRRR,GFS,ECMWF,ICON,GEM,JMA under every selected model.
+- C23 accuracy window is 24 buckets; obsHours>=20; scoreModel skips hours missing on either side; footer shows 24h span + obsHours/24.
+- C24 score math still 100·e^(−MAE/0.5) recomputed over the ~24 scored hours; matches manual.
+- C25 swipe left advances model, swipe right reverses; small vertical drag does NOT trigger; wraps HRRR<->ECMWF.
+- C26 fresh load (clear localStorage) opens on HRRR; after cycling + reload, still HRRR.
+- C27 icon files exist, referenced in <head>, visually pleasant (manual image review — PASS, see screenshot).
+- C9r2 no console errors.
+Test: preview_eval simulated touch events on <main>; DOM/__acc checks; manual recompute.
+
+Round-3 results (all PASS, live data):
+- C22 order HRRR,GFS,ECMWF,ICON,GEM,JMA ✓. C26 fresh load (cleared localStorage) opens HRRR ✓.
+- C25 swipe: left HRRR→GFS→ECMWF→HRRR(wrap), right reverses; vertical drag & short swipe no-op ✓.
+- C23 window=24 buckets, obsHours 21/24, scoreModel skips hours null on either side ✓.
+- C24 24h scores GFS 10 / ECMWF 7 / HRRR 0, exact manual match, sorted desc ✓. Alignment spot-checked hour-by-hour (obs total 23mm; HRRR run 67.9mm=big overpredict → genuine 0%, not a bug).
+- C27 icon files present + linked in <head>; visual review good ✓. C9r2 no console errors ✓.
+
+OPEN NOTE for user: 24h-lead scores come out low/clustered (0–10%) on rainy days with scaleMM=0.5 because 24h hourly QPF is genuinely poor (esp. HRRR). Ranking still discriminates. Offered to soften scale (e.g. 1.0mm) if more spread desired — NOT changed unilaterally (meets the spec: perfect=100%, monotonic).
+- Round-3 committed + pushed; Pages build triggered manually.
+
 ## ROUND 2 (second user message)
 Tasks: (1) drop "blend on long-press" subtitle; (2) long-press card shows ALL 6 models + blend, confirm blend = average of 6 (finding: it's the mean of all 6 EXCEPT a wild-outlier top value >2×second+1mm is dropped — kept deliberately, disclosed to user); (3) drop rainfall lower-bound cutoffs (PRECIP_MIN removed; blank iff value rounds to 0.0); (4) icon rain state driven by the SAME rounded mm as the cell (fog exception); (5) info (ⓘ) button left of title → accuracy panel: HRRR/GFS/ECMWF scored 0–100% on past-6-observed-hours rain vs NWS obs (KNYC first, then LGA/JFK/EWR/TEB; most recent 6 consecutive reported hours), forecasts = previous_day1 runs (USER DECISION: 24h-ago runs, since no API serves 6h-ago runs), score = 100·e^(−MAE/0.5mm), sorted desc, X to close, background refresh 15 min + on open + on visibilitychange, footer shows obs window/station/basis/refreshed time.
 Memory file radar-feature.md updated (30-min arrow, poll/stamp) with user permission.
