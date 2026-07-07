@@ -58,6 +58,19 @@
   main {
     padding: 0 6px 24px;
   }
+  /* Swipe carousel: the pager holds the live table plus, during a gesture, two
+     off-screen "ghost" tables (the neighbouring models) that peek in from the
+     sides. `overflow: clip` is applied ONLY while swiping (.swiping) so the
+     ghosts don't cause horizontal page scroll — and so the table's sticky
+     header/day-dividers behave normally at rest (clip would otherwise re-anchor
+     them). It isn't a scroll container, so vertical stickiness is preserved. */
+  #pager { position: relative; }
+  #pager.swiping { overflow: clip; }
+  #pager > table { will-change: transform; backface-visibility: hidden; }
+  #pager > table.ghost {
+    position: absolute; top: 0; left: 0; width: 100%;
+    will-change: transform;
+  }
   table {
     width: 100%;
     border-collapse: collapse;
@@ -310,7 +323,7 @@
 <body>
 
 <header>
-  <button id="infoBtn" aria-label="Rain forecast accuracy, past 6 hours">
+  <button id="infoBtn" aria-label="Rain forecast accuracy, past 24 hours">
     <svg viewBox="0 0 24 24">
       <circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="1.6"/>
       <circle cx="12" cy="7.6" r="1.35" fill="currentColor"/>
@@ -336,15 +349,17 @@
 </header>
 
 <main>
-  <table id="table" style="display:none">
-    <colgroup>
-      <col class="c-hour"><col class="c-temp"><col class="c-sky"><col class="c-rain"><col class="c-wind">
-    </colgroup>
-    <thead>
-      <tr><th>Hour</th><th id="tempHeader" class="tap" onclick="toggleTempUnit()" aria-label="Toggle temperature units">Temp · °C</th><th>Sky</th><th>mm</th><th>Wind</th></tr>
-    </thead>
-    <tbody id="rows"></tbody>
-  </table>
+  <div id="pager">
+    <table id="table" style="display:none">
+      <colgroup>
+        <col class="c-hour"><col class="c-temp"><col class="c-sky"><col class="c-rain"><col class="c-wind">
+      </colgroup>
+      <thead>
+        <tr><th>Hour</th><th id="tempHeader" class="tap" onclick="toggleTempUnit()" aria-label="Toggle temperature units">Temp · °C</th><th>Sky</th><th>mm</th><th>Wind</th></tr>
+      </thead>
+      <tbody id="rows"></tbody>
+    </table>
+  </div>
   <div class="status" id="status">Loading forecast…</div>
 </main>
 
@@ -354,9 +369,9 @@
   <button id="accClose" aria-label="Close accuracy panel">✕</button>
   <div id="accCard">
     <h2>Rain forecast accuracy</h2>
-    <p class="acc-sub">How close each model's run from ~24 h earlier came to the
+    <p class="acc-sub">How closely each model's run from ~24 h earlier matched the
       rain actually measured over the most recent 24 observed hours.
-      100% = every hour predicted exactly.</p>
+      100% = every hour exact; 0% = no overlap at all (missed all the rain).</p>
     <div id="accBody"><div class="acc-status">Scoring…</div></div>
     <div id="accFoot"></div>
   </div>
@@ -737,26 +752,12 @@ function updateTitle() {
   document.getElementById('title').textContent = `${name} · 10065 Upper East Side`;
   document.title = `${name} · 10065`;
 }
-/* dir: +1 = forward (title tap, swipe left), −1 = back (swipe right) */
-function cycleModel(dir = 1) {
-  modelIdx = (modelIdx + dir + MODELS.length) % MODELS.length;
-  updateTitle();
-  if (lastData) { render(lastData); updateHeader(); animateSwap(dir); }
-  refresh();   // instant re-render from cache above; also re-pull latest data
-}
-/* Quick slide-in of the table from the swipe direction — keeps model switches
-   feeling physical without a heavy carousel. */
-function animateSwap(dir) {
-  const el = document.getElementById('table');
-  el.style.transition = 'none';
-  el.style.transform = `translateX(${dir * -26}px)`;
-  el.style.opacity = '0.25';
-  requestAnimationFrame(() => requestAnimationFrame(() => {
-    el.style.transition = 'transform 170ms ease-out, opacity 170ms ease-out';
-    el.style.transform = 'translateX(0)';
-    el.style.opacity = '1';
-  }));
-}
+/* The swipe-pager module below installs the real slide animation here; a tap on
+   the title calls cycleModel(), which delegates to it. Declared as a hoisted
+   function so the header's inline onclick resolves on the global object.
+   dir: +1 = next model, −1 = previous. */
+let __cycleImpl = function (dir) { /* installed on load by the pager module */ };
+function cycleModel(dir = 1) { __cycleImpl(dir); }
 
 /* ===================== Render ===================== */
 let lastData = null;        // cached so cycling model / temp unit is instant
@@ -794,18 +795,30 @@ function updateHeader() {
 }
 
 function render(data) {
-  const tbody  = document.getElementById('rows');
   const table  = document.getElementById('table');
   const status = document.getElementById('status');
-
-  tbody.innerHTML = '';
   // Re-rendering detaches any cell being long-pressed; its touchend then can't
   // bubble anywhere, so dismiss the readout (and its pending timer) here.
   if (window.__hideRainInfo) window.__hideRainInfo();
-  // Every row-visible variable comes from the SELECTED model's suffixed arrays;
-  // the other models only feed the rain blend behind the long-press card.
+  const rowsShown = renderModelInto(document.getElementById('rows'), modelIdx, data);
+  if (rowsShown === 0) {
+    status.textContent = 'No forecast hours in window.';
+    status.style.display = '';
+    table.style.display = 'none';
+  } else {
+    status.style.display = 'none';
+    table.style.display = '';
+  }
+}
+
+/* Builds the forecast rows for MODELS[mIdx] into `tbody`, returns the row count.
+   Split out from render() so the swipe pager can paint a neighbouring model
+   into an off-screen ghost table. Every row-visible variable comes from that
+   model's suffixed arrays; the other models only feed the long-press blend. */
+function renderModelInto(tbody, mIdx, data) {
+  tbody.innerHTML = '';
   const h     = data.main.hourly;
-  const sfx   = '_' + currentModel().id;
+  const sfx   = '_' + MODELS[mIdx].id;
   const times = h.time;
   const temp  = h['temperature_2m' + sfx];
   const ccL   = h['cloud_cover_low' + sfx];
@@ -873,15 +886,7 @@ function render(data) {
     tbody.appendChild(tr);
     rowsShown++;
   }
-
-  if (rowsShown === 0) {
-    status.textContent = 'No forecast hours in window.';
-    status.style.display = '';
-    table.style.display = 'none';
-  } else {
-    status.style.display = 'none';
-    table.style.display = '';
-  }
+  return rowsShown;
 }
 
 /* ===================== Long-press rain readout ===================== */
@@ -938,29 +943,149 @@ function render(data) {
   window.__hideRainInfo = hide;   // render() dismisses on table re-render
 })();
 
-/* ===================== Swipe to cycle models ===================== */
-/* Horizontal swipe anywhere over the rows cycles HRRR ⇄ GFS ⇄ ECMWF.
-   Listeners are passive so vertical scrolling stays native-smooth on iOS; a
-   gesture only counts as a swipe when it's fast, long enough, and clearly more
-   horizontal than vertical (2:1), so scrolling never falsely triggers. */
+/* ===================== Swipe pager (cycle models) ===================== */
+/* A finger-tracking carousel over the forecast rows: the table follows the
+   thumb in real time and the neighbouring models peek in from the sides, then
+   the gesture settles to the next/previous model (or snaps back) with a single
+   eased animation — the same slide a title-tap triggers. Built for iOS feel:
+   GPU transforms, an axis lock so vertical scrolling stays native, and momentum
+   (a quick flick commits even if short). Installs the global cycleModel(). */
 (function () {
-  const area = document.querySelector('main');
-  let x0 = 0, y0 = 0, t0 = 0, tracking = false;
-  area.addEventListener('touchstart', e => {
-    tracking = e.touches.length === 1;      // ignore multi-touch (pinch etc.)
-    if (!tracking) return;
-    x0 = e.touches[0].clientX; y0 = e.touches[0].clientY; t0 = Date.now();
+  const pager = document.getElementById('pager');
+  const table = () => document.getElementById('table');
+  const N = () => MODELS.length;
+
+  let W = 0, x0 = 0, y0 = 0, axis = null, dragging = false, animating = false;
+  let gPrev = null, gNext = null;           // neighbour ghost tables
+  let vx = 0, lastX = 0, lastT = 0;         // velocity tracking (px/ms)
+
+  function buildGhost(mIdx) {
+    const g = table().cloneNode(true);      // clones colgroup+thead → columns line up
+    g.removeAttribute('id');
+    g.classList.add('ghost');
+    g.style.display = '';
+    const tb = g.querySelector('tbody');
+    tb.removeAttribute('id');               // avoid duplicate #rows
+    renderModelInto(tb, mIdx, lastData);
+    pager.appendChild(g);
+    return g;
+  }
+  function setX(dx) {
+    table().style.transform = `translate3d(${dx}px,0,0)`;
+    if (gPrev) gPrev.style.transform = `translate3d(${dx - W}px,0,0)`;
+    if (gNext) gNext.style.transform = `translate3d(${dx + W}px,0,0)`;
+  }
+  function noTransition(el) { if (el) el.style.transition = 'none'; }
+  function begin() {
+    if (!lastData || animating) return false;
+    W = pager.clientWidth;
+    pager.classList.add('swiping');         // clip ghost overflow (only while active)
+    gNext = buildGhost((modelIdx + 1) % N());
+    gPrev = buildGhost((modelIdx - 1 + N()) % N());
+    noTransition(table()); noTransition(gPrev); noTransition(gNext);
+    setX(0);
+    return true;
+  }
+  function cleanup() {
+    if (gPrev) gPrev.remove();
+    if (gNext) gNext.remove();
+    gPrev = gNext = null;
+    pager.classList.remove('swiping');
+  }
+  /* dir: 1 next, −1 prev, 0 snap back. Slides everything by one panel, then
+     (on commit) repaints the real table with the new model at rest. The start
+     transform is committed via a forced reflow (not rAF) and a setTimeout
+     backstops the transitionend, so the model change always lands even if the
+     transition never paints (e.g. tab not visible). */
+  function settle(dir, dur) {
+    animating = true;
+    const ms = dur || 300;
+    const tr = `transform ${ms}ms cubic-bezier(0.22,0.61,0.36,1)`;
+    void table().offsetWidth;               // commit the current (drag) position
+    table().style.transition = tr;
+    if (gPrev) gPrev.style.transition = tr;
+    if (gNext) gNext.style.transition = tr;
+    setX(dir === 1 ? -W : dir === -1 ? W : 0);   // triggers the eased slide
+
+    let done = false;
+    const finalize = () => {
+      if (done) return; done = true;
+      table().removeEventListener('transitionend', finalize);
+      if (dir !== 0) {
+        modelIdx = (modelIdx + dir + N()) % N();
+        updateTitle();
+        table().style.transition = 'none';
+        render(lastData);                   // real table → new model, at rest
+        table().style.transform = 'none';
+        updateHeader();
+        refresh();                          // also re-pull the latest data
+      } else {
+        table().style.transition = 'none';
+        table().style.transform = 'none';
+      }
+      cleanup();
+      animating = false;
+    };
+    table().addEventListener('transitionend', finalize);
+    setTimeout(finalize, ms + 140);         // guarantee the commit lands
+  }
+
+  // Title tap (and any programmatic cycle) runs the same slide from rest.
+  __cycleImpl = function (dir) {
+    if (animating) return;
+    const d = dir === -1 ? -1 : 1;
+    if (!begin()) {                          // no data yet → just flip the label
+      modelIdx = (modelIdx + d + N()) % N();
+      updateTitle();
+      return;
+    }
+    settle(d);
+  };
+
+  pager.addEventListener('touchstart', e => {
+    if (animating || e.touches.length !== 1) return;
+    x0 = lastX = e.touches[0].clientX; y0 = e.touches[0].clientY;
+    lastT = performance.now(); vx = 0; axis = null; dragging = true;
   }, { passive: true });
-  area.addEventListener('touchend', e => {
-    if (!tracking) return;
-    tracking = false;
-    const t = e.changedTouches[0];
-    const dx = t.clientX - x0, dy = t.clientY - y0;
-    if (Date.now() - t0 > 600) return;                    // too slow — a drag
-    if (Math.abs(dx) < 60) return;                        // too short
-    if (Math.abs(dx) < 2 * Math.abs(dy)) return;          // mostly vertical
-    cycleModel(dx < 0 ? 1 : -1);   // swipe left → next model, right → previous
+
+  pager.addEventListener('touchmove', e => {
+    if (!dragging || e.touches.length !== 1) return;
+    const x = e.touches[0].clientX, y = e.touches[0].clientY;
+    const dx = x - x0, dy = y - y0;
+    if (axis === null) {
+      if (Math.abs(dx) < 8 && Math.abs(dy) < 8) return;   // wait for a clear intent
+      axis = Math.abs(dx) > Math.abs(dy) * 1.2 ? 'x' : 'y';
+      if (axis === 'x' && !begin()) { axis = 'y'; }
+    }
+    if (axis !== 'x') return;                             // vertical → let the page scroll
+    e.preventDefault();                                   // own the horizontal drag
+    const now = performance.now();
+    // Sample velocity only over real time gaps (≥4 ms) so a near-zero dt can't
+    // blow up into a bogus "flick". Real touchmoves arrive ~16 ms apart.
+    if (now - lastT > 4) { vx = (x - lastX) / (now - lastT); lastX = x; lastT = now; }
+    setX(dx);
+  }, { passive: false });
+
+  function end(e) {
+    if (!dragging) return;
+    dragging = false;
+    if (axis !== 'x') return;
+    const dx = (e.changedTouches ? e.changedTouches[0].clientX : lastX) - x0;
+    const flick = Math.abs(vx) > 0.4 && Math.abs(dx) > 30;
+    const far   = Math.abs(dx) > Math.min(90, W * 0.28);
+    let dir = 0;
+    if (flick || far) dir = (vx !== 0 ? vx < 0 : dx < 0) ? 1 : -1;
+    // Duration scales with the distance still to travel → consistent speed feel.
+    const remain = dir === 0 ? Math.abs(dx) : W - Math.abs(dx);
+    settle(dir, Math.max(140, Math.min(320, remain * 0.9)));
+  }
+  pager.addEventListener('touchend', end, { passive: true });
+  pager.addEventListener('touchcancel', e => {
+    if (dragging && axis === 'x') { dragging = false; settle(0, 200); }
+    else dragging = false;
   }, { passive: true });
+
+  window.__pager = { begin, settle, get animating() { return animating; } };  // test hook
 })();
 
 /* ===================== Radar map ===================== */
@@ -1253,19 +1378,31 @@ function render(data) {
 
    Forecast: each model's run from ~24 h earlier (Open-Meteo previous-runs API,
    precipitation_previous_day1 — its finest run offset; per-user decision this
-   replaces the unavailable "run from 6 h ago"). Same basis for all 3 models.
+   replaces the unavailable "run from 6 h ago"). Same basis for all 3 models,
+   scored over the SAME set of hours (obs present AND all 3 forecasts present),
+   so the comparison is strictly apples-to-apples.
 
-   Score: 100·e^(−MAE/0.5 mm), where MAE is the mean |forecast−actual| over the
-   scored hours. Perfect hourly prediction ⇒ MAE 0 ⇒ 100%; monotonically
-   decreasing and never negative as forecasts stray. 0.5 mm/h avg miss ⇒ 37%. */
+   Score — quantitative Sørensen–Dice similarity between the forecast and
+   observed hourly-rain series (equivalently 1 − Bray–Curtis dissimilarity, a
+   standard hydrology metric for comparing rainfall series):
+
+        score = 100 · 2·Σ min(fᵢ, oᵢ) / Σ (fᵢ + oᵢ)
+
+   over the scored hours i. Properties (why this, not exp(−MAE)):
+     • 100% ⇔ fᵢ = oᵢ every hour (perfect).
+     • 0% ⇔ zero overlap — every rainy hour was forecast dry and every forecast
+       of rain fell on a dry hour. The user's worst case (all 24 h rained, model
+       said 0) lands exactly here. Ordinary misses do NOT collapse to 0.
+     • Scale-free: over-forecasting 2× → 67%, 3× → 50%; it spreads scores across
+       the range and needs no tuned constant. Grounded in what actually fell,
+       not an arbitrary mm scale. */
 (function () {
   const ACC = {
     stations: ['KNYC', 'KLGA', 'KJFK', 'KEWR', 'KTEB'],  // nearest first
-    scaleMM: 0.5,                 // e-folding MAE scale for the score
     refreshMs: 15 * 60 * 1000,    // background refresh cadence
     windowH: 24,                  // scoring window (hours)
     minObsHours: 20,              // station must report ≥ this many of the 24
-    minHours: 16,                 // a model needs ≥ this many scoreable hours
+    minHours: 16,                 // need ≥ this many hours scored across all models
   };
   const view = document.getElementById('accView');
   let last = null;   // {rows, obs:{station, win}, checkedAt, error?}
@@ -1329,15 +1466,19 @@ function render(data) {
     return out;
   }
 
-  function scoreModel(fc, win) {
-    let sum = 0, n = 0;
+  /* Sørensen–Dice similarity over the shared scored hours (mask[i] true).
+     minMM sums Σmin(f,o); denom sums Σ(f+o). obsMM/n are for display. */
+  function scoreModel(fc, win, mask) {
+    let minSum = 0, denom = 0, obsSum = 0, n = 0;
     for (let i = 0; i < win.length; i++) {
-      if (fc[i] == null || win[i].v == null) continue;   // need both sides
-      sum += Math.abs(fc[i] - win[i].v); n++;
+      if (!mask[i]) continue;
+      const f = fc[i], o = win[i].v;
+      minSum += Math.min(f, o); denom += f + o; obsSum += o; n++;
     }
     if (n < ACC.minHours) return null;
-    const mae = sum / n;
-    return { pct: Math.round(100 * Math.exp(-mae / ACC.scaleMM)), mae, n };
+    // No rain forecast or observed at all in the window → nothing to score.
+    const pct = denom === 0 ? null : Math.round(100 * (2 * minSum) / denom);
+    return { pct, n, obsMM: obsSum };
   }
 
   async function refreshAcc() {
@@ -1345,10 +1486,15 @@ function render(data) {
       const obs = await fetchObsWindow();
       if (!obs) throw new Error('no station reported enough of the past 24 h');
       const prev = await fetchPrevRuns(obs.win);
+      // Common scoring mask: obs present AND every model's forecast present.
+      const mask = obs.win.map((w, i) =>
+        w.v != null && MODELS.every(m => prev[m.name][i] != null));
+      const scoredHours = mask.filter(Boolean).length;
       const rows = MODELS
-        .map(m => ({ name: m.name, s: scoreModel(prev[m.name], obs.win) }))
-        .sort((a, b) => (b.s ? b.s.pct : -1) - (a.s ? a.s.pct : -1));
-      last = { rows, obs, checkedAt: new Date() };
+        .map(m => ({ name: m.name, s: scoreModel(prev[m.name], obs.win, mask) }))
+        .sort((a, b) => ((b.s && b.s.pct != null) ? b.s.pct : -1) -
+                        ((a.s && a.s.pct != null) ? a.s.pct : -1));
+      last = { rows, obs, scoredHours, checkedAt: new Date() };
     } catch (e) {
       // Keep stale scores (and their honest "Refreshed" time) if we have them.
       if (!last || !last.rows) last = { error: e.message };
@@ -1380,9 +1526,9 @@ function render(data) {
     const end   = new Date(w[w.length - 1].k + ':00Z');
     foot.innerHTML =
       `Observed rain: ${fmtDT(start)} – ${fmtDT(end)}<br>` +
-      `Station ${last.obs.station} · ${last.obs.obsHours}/24 h reported · ` +
+      `Station ${last.obs.station} · ${last.scoredHours} h scored · ` +
       `runs from ~24 h earlier<br>` +
-      `Score = 100·e<sup>−MAE/0.5 mm</sup> · Refreshed ${fmtT(last.checkedAt)}`;
+      `Score = 2·Σmin(f,o) / Σ(f+o) · Refreshed ${fmtT(last.checkedAt)}`;
   }
 
   document.getElementById('infoBtn').addEventListener('click', () => {

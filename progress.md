@@ -1,5 +1,25 @@
 # progress.md — July 6 session
 
+## ROUND 4 (fourth user message)
+Tasks: (1) make swipe FLUID (was choppy); (2) fix accuracy scoring — more spread, mathematically/empirically grounded, 0% only for total miss; (3) explain the 24h obs omissions + decide whether to revise the period.
+
+### (1) Swipe — rewritten as a finger-tracking carousel
+- #table wrapped in #pager. During a gesture, two "ghost" clone tables (prev+next model, painted via new renderModelInto()) are appended and translate WITH the finger so neighbours peek in; on release it settles one panel over (commit) or snaps back, via a single eased CSS transform transition (GPU translate3d).
+- Axis lock (first 8px; horizontal only if |dx|>1.2|dy|) so vertical scroll stays native (passive touchmove until locked-horizontal, then preventDefault). Momentum: a fast flick commits even if short (vx>0.4 px/ms AND |dx|>30). Distance commit: |dx|>min(90, 0.28·W).
+- CRITICAL fixes found via testing: (a) starting the slide via requestAnimationFrame failed when the tab wasn't painting → switched to forced reflow (void offsetWidth) + setTimeout(finalize) backstop so the commit ALWAYS lands; (b) velocity over sub-4ms dt blew up into bogus flicks → guard dt>4ms; (c) flick floor raised to |dx|>30 so a slow short drag snaps back.
+- cycleModel() (title tap) now delegates to the same pager slide (installed as __cycleImpl; kept a hoisted global function cycleModel so the inline onclick still resolves).
+- overflow:clip applied to #pager ONLY while .swiping (clip isn't a scroll container, and only-while-swiping keeps the sticky thead/day-dividers un-reanchored at rest). Verified sticky still works (thead stuck at y=55 while scrolled 600px).
+- Verified: L/R cycle + wrap, short snap-back, vertical scroll ignored, mid-drag neighbour peek (screenshot), long-press still works, radar still opens, no console errors.
+
+### (2) Accuracy — quantitative Sørensen–Dice similarity
+- Replaced 100·e^(−MAE/0.5) with score = 100 · 2·Σmin(fᵢ,oᵢ) / Σ(fᵢ+oᵢ) over shared scored hours. = 1 − Bray–Curtis dissimilarity; standard hydrology rainfall-series similarity; PARAMETER-FREE (no tuned scale) and scale-free.
+- Properties (verified with synthetic inputs): perfect→100; total miss (all rain, forecast 0)→0 EXACTLY the user's worst-case anchor; false alarm→0; 2× over→67; 3×→50; both-dry→null (shows —); <minHours→null.
+- All 3 models scored on a COMMON hour mask (obs present AND all 3 forecasts present) → strictly apples-to-apples. Footer shows "N h scored" + formula.
+- Live result now ECMWF 42 / GFS 39 / HRRR 24 (was 7/10/0) — spread + HRRR no longer 0 (it over-forecast 3×, real overlap credit). Manual recompute matched DOM exactly.
+
+### (3) 24h obs omissions — explanation + decision (see final msg to user)
+Cause: NWS METAR precipitationLastHour is null in hours where the station didn't encode a precip amount (trace/zero often omitted, esp. Central Park KNYC which is a limited co-op site, not a full ASOS), plus occasional missing hourly obs. Not an API-window issue (limit=72 covers >24h). Decision: KEEP 24h but (a) require ≥20/24 reported, (b) score all 3 models on the SAME present hours so omissions bias NONE of them and don't distort the ranking, (c) display the scored-hour count. Offered station-completeness alternative to user.
+
 ## ROUND 3 (third user message)
 Tasks: (1) long-press card order fixed to HRRR,GFS,ECMWF,ICON,GEM,JMA (ENS_ORDER reordered); (2) accuracy panel now scores the past 24 OBSERVED hours (windowH=24, minObsHours=20, minHours=16), tolerating missing hourly reports (score only hours where BOTH obs and forecast exist); (3) swipe left/right anywhere on rows cycles the 3 active models — passive touch listeners on <main>, thresholds: <600ms, |dx|>60px, |dx|>2|dy|; swipe-left=next, swipe-right=prev; brief translateX+opacity slide via animateSwap; (4) app always opens on HRRR (modelIdx=0, dropped localStorage persistence); (5) app icon generated via PIL script (scratchpad/make_icon.py) → apple-touch-icon.png (512) + icon-180.png in project root; sun-behind-cloud + cyan raindrops on blue→navy gradient; wired into <head>.
 
