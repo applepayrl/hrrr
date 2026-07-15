@@ -172,3 +172,17 @@ crop landmarks visible; close/reopen instant; live splice observed (new 20:16Z f
 oldest pruned); radar view regression-free; zero console errors.
 
 Next: commit + push + MANUAL Pages build trigger (see IMPORTANT note above).
+
+## 2026-07-15 · Sat loop v2: full-screen iPhone crop + cross-fade interpolation
+- Crop now x=1130 y=536 w=620 h=1348 (2400-space): width unchanged, height extended
+  N/S so 620:1348 exactly matches iPhone 17 Pro (402×874). Canvas is full-bleed via
+  object-fit: cover (tiny trim on other aspect ratios, no letterbox anywhere).
+- Playback rewritten from discrete setTimeout ticks to a rAF cross-fade: each frame
+  linearly blends into the next over transMs=400ms, dwell 1500ms on newest, hard cut
+  back to start (fading backwards would read as reversed motion). Stamp switches to
+  the nearer frame at a=0.5.
+- Verified: blend at a=0.5 == exact arithmetic midpoint at a max-motion pixel;
+  backing 620×1348; fills 402×874 AND 375×812 viewports; stamp switch at halfway;
+  close/reopen instant; zero console errors. NOTE: rAF is suspended in the hidden
+  preview pane (document.hidden=true), so live playback can't be observed there —
+  drive __sat.render(i,a) manually to test.

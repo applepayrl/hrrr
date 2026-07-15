@@ -314,10 +314,11 @@
   #radarStamp .rs-sub, #satStamp .rs-sub { font-weight: 500; color: #4b5563; }
 
   /* ============== GOES satellite loop (cloud button) ============== */
-  /* Flex-centering letterboxes the fixed-aspect frame canvas full-screen. */
+  /* The crop's aspect matches an iPhone 17 Pro screen; cover-fit renders it
+     full-bleed on any phone (a hair of trim on other aspect ratios). */
   #satView { display: none; position: fixed; inset: 0; z-index: 1000; background: #000; }
-  #satView.open { display: flex; align-items: center; justify-content: center; }
-  #satCanvas { max-width: 100%; max-height: 100%; }
+  #satView.open { display: block; }
+  #satCanvas { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
   /* Strip Leaflet chrome down to a faint attribution (licensing) in the corner
      away from the arrow. */
   #radarView .leaflet-control-attribution {
@@ -1401,11 +1402,14 @@ function renderModelInto(tbody, mIdx, data) {
   const SAT = {
     base: 'https://cdn.star.nesdis.noaa.gov/GOES19/ABI/SECTOR/ne/GEOCOLOR/',
     res: 2400,                                  // stitch the max-res stills
-    crop: { x: 1130, y: 920, w: 620, h: 580 },  // px in 2400-space (calibrated visually)
+    // px in 2400-space (calibrated visually). Width covers NJ→LI's forks; height
+    // extends N/S so the 620:1348 aspect exactly matches an iPhone 17 Pro screen
+    // (402×874 CSS px) — rendered full-bleed with object-fit: cover.
+    crop: { x: 1130, y: 536, w: 620, h: 1348 },
     windowMs: 60 * 60 * 1000,                   // keep the last hour (vs newest frame)
     maxFrames: 13,
-    frameMs: 180,                               // playback pace per frame
-    dwellMs: 1200,                              // hold on the newest frame
+    transMs: 400,                               // cross-fade duration per frame step
+    dwellMs: 1500,                              // hold on the newest frame
     pollMs: 60 * 1000,                          // HEAD latest.jpg while open
   };
 
@@ -1419,8 +1423,7 @@ function renderModelInto(tbody, mIdx, data) {
   const ctx = canvas.getContext('2d');
 
   let frames = [];          // {key, t(ms), canvas} ascending by t
-  let idx = 0;              // next frame to show
-  let animTimer = null, pollTimer = null;
+  let pollTimer = null;
   let lastMod = null;       // last-modified of latest.jpg at last check
   let lastChecked = null;   // ms epoch of the last successful CDN contact
   let loading = false;      // collapse overlapping load() calls
@@ -1544,26 +1547,50 @@ function renderModelInto(tbody, mIdx, data) {
     } catch (e) { console.warn('sat poll:', e.message); }
   }
 
-  /* ---- playback ---- */
+  /* ---- playback: continuous cross-fade ----
+     Frames are ~5 min apart, so hard cuts read as choppy. The loop runs on
+     requestAnimationFrame and linearly cross-fades each frame into the next
+     over transMs (two GPU drawImage calls per vsync), holding the newest for
+     dwellMs before cutting back to the start (fading backwards would read as
+     reversed motion). */
+  let raf = null, t0 = 0, lastStampT = 0, curI = 0;
   function startLoop() {
     stopLoop();
     if (!frames.length) return;
     if (frames.length === 1) { drawFrame(frames[0]); return; }
-    tick();
+    t0 = performance.now();
+    raf = requestAnimationFrame(step);
   }
-  function stopLoop() { if (animTimer) { clearTimeout(animTimer); animTimer = null; } }
-  function tick() {
-    if (idx >= frames.length) idx = 0;
-    drawFrame(frames[idx]);
-    const isNewest = idx === frames.length - 1;
-    idx = (idx + 1) % frames.length;
-    animTimer = setTimeout(tick, isNewest ? SAT.dwellMs : SAT.frameMs);
+  function stopLoop() { if (raf) { cancelAnimationFrame(raf); raf = null; } }
+  function step(now) {
+    const n = frames.length;                    // re-read: poll may splice frames
+    const cycle = (n - 1) * SAT.transMs + SAT.dwellMs;
+    const t = (now - t0) % cycle;
+    let i, a;
+    if (t >= (n - 1) * SAT.transMs) { i = n - 1; a = 0; }    // dwell on newest
+    else { i = Math.floor(t / SAT.transMs); a = (t % SAT.transMs) / SAT.transMs; }
+    render(i, a);
+    raf = requestAnimationFrame(step);
   }
+  /* Blend frame i into i+1 at alpha a; stamp tracks the nearer frame. */
+  function render(i, a) {
+    curI = i;
+    ctx.drawImage(frames[i].canvas, 0, 0);
+    const next = frames[i + 1];
+    if (a > 0 && next) {
+      ctx.globalAlpha = a;
+      ctx.drawImage(next.canvas, 0, 0);
+      ctx.globalAlpha = 1;
+    }
+    const f = (a > 0.5 && next) ? next : frames[i];
+    if (f.t !== lastStampT) setStamp(f.t);
+  }
+  function drawFrame(f) { ctx.drawImage(f.canvas, 0, 0); setStamp(f.t); }
 
-  /* Draw a frame and stamp its DATE + TIME (updates on every frame swap). */
-  function drawFrame(f) {
-    ctx.drawImage(f.canvas, 0, 0);
-    const d = new Date(f.t);
+  /* Stamp pill: the displayed frame's DATE + TIME (updates as frames swap). */
+  function setStamp(tms) {
+    lastStampT = tms;
+    const d = new Date(tms);
     const date = d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
     const time = d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
     const sub = lastChecked
@@ -1577,9 +1604,10 @@ function renderModelInto(tbody, mIdx, data) {
 
   // Debug hooks for verification.
   window.__sat = {
-    SAT, parseKey, listKeys, load, poll, startLoop, stopLoop, drawFrame,
+    SAT, parseKey, listKeys, load, poll, startLoop, stopLoop, drawFrame, render,
     get frames() { return frames; },
-    get idx() { return idx; },
+    get curI() { return curI; },
+    get playing() { return !!raf; },
     get stamp() { return stampEl.textContent; },
   };
 })();
