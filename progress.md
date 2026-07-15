@@ -148,3 +148,27 @@ C10 Publish: git push succeeds; https://applepayrl.github.io/hrrr/ serves new co
 - loadRadar keeps a stale-but-stamped frame if a background poll fails; only first load shows "Radar unavailable".
 - Preview sandbox: api.open-meteo.com AND api.rainviewer.com return real JSON; only map TILES are canned.
 - IMPORTANT: GitHub Pages did NOT auto-build on push — latest build was stuck at 2d1bbbb (June 27), meaning the radar commit 5d42a7c was never live. Had to trigger manually: `gh api -X POST repos/applepayrl/hrrr/pages/builds`. Check build after every push: `gh api repos/applepayrl/hrrr/pages/builds/latest --jq '.status + " " + .commit'`.
+
+## 2026-07-15 · GOES-19 satellite loop (cloud button)
+Feature: full-screen GOES-19 GEOCOLOR loop (day true color / night IR), cropped to
+NJ + southern NY + Long Island, last hour (~12 frames @5 min), stitched client-side
+from 2400×2400 STAR CDN stills (pre-built site loop is only 600×600 → 4× sharper).
+Cloud button (#satBtn, right:60px) next to radar button; X close; per-frame date+time
+stamp pill; 60s HEAD-latest.jpg poll splices new frames in while open.
+
+Key facts:
+- CDN: https://cdn.star.nesdis.noaa.gov/GOES19/ABI/SECTOR/ne/GEOCOLOR/ — CORS `*` on
+  images AND directory listing (~196 KB gzipped); filenames YYYYJJJHHMM_..._2400x2400.jpg
+  (UTC, day-of-year); cadence ~5 min WITH GAPS → always parse listing, never predict names.
+- Crop rect (2400-space): x=1130 y=920 w=620 h=580 — calibrated visually (Cape May,
+  both LI forks, southern NY all in frame). Canvas backing = native 620×580.
+- Title now abbreviates to "UES" under 430px viewport width (two right-side buttons
+  would underlap "…Upper East Side" on phones); resize listener keeps it in sync.
+- ~35 MB per cold open (user accepted; frames cached for the session, reopen instant).
+
+Verified (all PASS): button layout clears longest title at 375px; 10 distinct frames
+spanning 55 min; per-frame stamp lockstep (all frames); 2400×2400 source confirmed;
+crop landmarks visible; close/reopen instant; live splice observed (new 20:16Z frame in,
+oldest pruned); radar view regression-free; zero console errors.
+
+Next: commit + push + MANUAL Pages build trigger (see IMPORTANT note above).

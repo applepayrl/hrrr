@@ -193,8 +193,8 @@
   .status.err { color: #f87171; }
 
   /* ===================== Radar map ===================== */
-  /* Round header buttons: radar top-right, info (accuracy) top-left. */
-  #radarBtn, #infoBtn {
+  /* Round header buttons: radar + satellite top-right, info (accuracy) top-left. */
+  #radarBtn, #infoBtn, #satBtn {
     position: absolute;
     top: calc(env(safe-area-inset-top) + 12px);
     width: 38px; height: 38px;
@@ -207,9 +207,10 @@
     cursor: pointer;
   }
   #radarBtn { right: 14px; }
+  #satBtn   { right: 60px; }
   #infoBtn  { left: 14px; }
-  #radarBtn:active, #infoBtn:active { background: rgba(255,255,255,0.18); }
-  #radarBtn svg, #infoBtn svg { width: 22px; height: 22px; display: block; }
+  #radarBtn:active, #infoBtn:active, #satBtn:active { background: rgba(255,255,255,0.18); }
+  #radarBtn svg, #infoBtn svg, #satBtn svg { width: 22px; height: 22px; display: block; }
 
   /* ============== Forecast-accuracy panel (info button) ============== */
   #accView {
@@ -267,7 +268,7 @@
   #radarView { display: none; position: fixed; inset: 0; z-index: 1000; background: #000; }
   #radarView.open { display: block; }
   #radarMap { position: absolute; inset: 0; width: 100%; height: 100%; background: #0b0b0f; }
-  #radarClose {
+  #radarClose, #satClose {
     position: absolute; z-index: 1002;
     top: calc(env(safe-area-inset-top) + 12px);
     right: calc(env(safe-area-inset-right) + 12px);
@@ -289,7 +290,7 @@
     filter: drop-shadow(0 0 1px rgba(255,255,255,0.95)) drop-shadow(0 0 1px rgba(255,255,255,0.95));
   }
   /* Status pill (loading / no-precip), shares the bottom-right corner. */
-  #radarMsg {
+  #radarMsg, #satMsg {
     position: absolute; z-index: 1001;
     right: calc(env(safe-area-inset-right) + 14px);
     bottom: calc(env(safe-area-inset-bottom) + 18px);
@@ -300,7 +301,7 @@
     display: none;
   }
   /* Frame/refresh timestamp pill, top-left (away from close button & arrow). */
-  #radarStamp {
+  #radarStamp, #satStamp {
     position: absolute; z-index: 1001;
     top: calc(env(safe-area-inset-top) + 12px);
     left: calc(env(safe-area-inset-left) + 14px);
@@ -310,7 +311,13 @@
     line-height: 1.35;
     display: none;
   }
-  #radarStamp .rs-sub { font-weight: 500; color: #4b5563; }
+  #radarStamp .rs-sub, #satStamp .rs-sub { font-weight: 500; color: #4b5563; }
+
+  /* ============== GOES satellite loop (cloud button) ============== */
+  /* Flex-centering letterboxes the fixed-aspect frame canvas full-screen. */
+  #satView { display: none; position: fixed; inset: 0; z-index: 1000; background: #000; }
+  #satView.open { display: flex; align-items: center; justify-content: center; }
+  #satCanvas { max-width: 100%; max-height: 100%; }
   /* Strip Leaflet chrome down to a faint attribution (licensing) in the corner
      away from the arrow. */
   #radarView .leaflet-control-attribution {
@@ -336,6 +343,12 @@
   <div class="loc" id="title" onclick="cycleModel()" role="button"
        aria-label="Cycle forecast model">HRRR · 10065 Upper East Side</div>
   <div class="upd" id="updated">Loading…</div>
+  <button id="satBtn" aria-label="Open satellite loop">
+    <svg viewBox="0 0 24 24">
+      <path d="M7.2 17.5 h9.4 a3.6 3.6 0 0 0 0.85 -7.1 a5 5 0 0 0 -9.65 -1.1 a4.2 4.2 0 0 0 -0.6 8.2 z"
+            fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/>
+    </svg>
+  </button>
   <button id="radarBtn" aria-label="Open radar map">
     <svg viewBox="0 0 24 24">
       <g fill="none" stroke="currentColor" stroke-width="1.6">
@@ -383,6 +396,13 @@
   <div id="radarMsg"></div>
   <div id="radarStamp"></div>
   <button id="radarClose" aria-label="Close radar map">✕</button>
+</div>
+
+<div id="satView">
+  <canvas id="satCanvas"></canvas>
+  <div id="satMsg"></div>
+  <div id="satStamp"></div>
+  <button id="satClose" aria-label="Close satellite loop">✕</button>
 </div>
 
 <script>
@@ -749,9 +769,14 @@ let modelIdx = 0;                  // always open on HRRR (deliberate: no persis
 function currentModel() { return MODELS[modelIdx]; }
 function updateTitle() {
   const name = currentModel().name;
-  document.getElementById('title').textContent = `${name} · 10065 Upper East Side`;
+  // Two round buttons now flank the title's right side; the full neighbourhood
+  // name only clears them on wider phones. Narrow screens abbreviate rather
+  // than run the text underneath a button ("ECMWF · … East Side" is widest).
+  const hood = window.innerWidth >= 430 ? 'Upper East Side' : 'UES';
+  document.getElementById('title').textContent = `${name} · 10065 ${hood}`;
   document.title = `${name} · 10065`;
 }
+window.addEventListener('resize', updateTitle);   // orientation / window changes
 /* The swipe-pager module below installs the real slide animation here; a tap on
    the title calls cycleModel(), which delegates to it. Declared as a hoisted
    function so the header's inline onclick resolves on the global object.
@@ -1361,6 +1386,202 @@ function renderModelInto(tbody, mIdx, data) {
 
   // Debug hooks for verification (deterministic test of the motion math).
   window.__radar = { estimateShift, resMeters, lonLatToGlobalPixel, frameMask, computeArrow, loadRadar, drawArrow };
+})();
+
+/* ===================== GOES satellite loop ===================== */
+/* Full-screen GOES-19 GEOCOLOR animation (true color by day, multispectral IR
+   at night), cropped to NJ + southern NY + Long Island, last hour of frames.
+   Stitches the 2400×2400 stills from the STAR CDN — the site's pre-built loop
+   is only 600×600, so client-side stitching is 4× the linear resolution. Each
+   still is cropped once into a small per-frame canvas at native resolution and
+   the big image released. The stamp pill shows every frame's date+time as it
+   displays. Filenames are UTC-stamped (YYYYJJJHHMM…); cadence ~5 min with
+   occasional gaps, so frames come from the directory listing, never predicted. */
+(function () {
+  const SAT = {
+    base: 'https://cdn.star.nesdis.noaa.gov/GOES19/ABI/SECTOR/ne/GEOCOLOR/',
+    res: 2400,                                  // stitch the max-res stills
+    crop: { x: 1130, y: 920, w: 620, h: 580 },  // px in 2400-space (calibrated visually)
+    windowMs: 60 * 60 * 1000,                   // keep the last hour (vs newest frame)
+    maxFrames: 13,
+    frameMs: 180,                               // playback pace per frame
+    dwellMs: 1200,                              // hold on the newest frame
+    pollMs: 60 * 1000,                          // HEAD latest.jpg while open
+  };
+
+  const view     = document.getElementById('satView');
+  const btn      = document.getElementById('satBtn');
+  const closeBtn = document.getElementById('satClose');
+  const msgEl    = document.getElementById('satMsg');
+  const stampEl  = document.getElementById('satStamp');
+  const canvas   = document.getElementById('satCanvas');
+  canvas.width = SAT.crop.w; canvas.height = SAT.crop.h;   // backing store = native crop res
+  const ctx = canvas.getContext('2d');
+
+  let frames = [];          // {key, t(ms), canvas} ascending by t
+  let idx = 0;              // next frame to show
+  let animTimer = null, pollTimer = null;
+  let lastMod = null;       // last-modified of latest.jpg at last check
+  let lastChecked = null;   // ms epoch of the last successful CDN contact
+  let loading = false;      // collapse overlapping load() calls
+
+  btn.addEventListener('click', open);
+  closeBtn.addEventListener('click', close);
+  document.addEventListener('visibilitychange', () => {
+    if (!view.classList.contains('open')) return;
+    if (document.hidden) { stopLoop(); stopPoll(); }
+    else { load(); startPoll(); startLoop(); }
+  });
+
+  function open() {
+    view.classList.add('open');
+    if (frames.length) startLoop();   // cached frames replay instantly
+    load();                           // then top up / first load
+    startPoll();
+  }
+  function close() {
+    view.classList.remove('open');
+    stopLoop(); stopPoll();           // frames stay cached for instant reopen
+  }
+  function startPoll() { stopPoll(); pollTimer = setInterval(poll, SAT.pollMs); }
+  function stopPoll()  { if (pollTimer) { clearInterval(pollTimer); pollTimer = null; } }
+
+  /* filename key "YYYYJJJHHMM" (UTC, JJJ = day of year) → ms epoch */
+  function parseKey(k) {
+    return Date.UTC(+k.slice(0, 4), 0, 1) + (+k.slice(4, 7) - 1) * 864e5 +
+           +k.slice(7, 9) * 36e5 + +k.slice(9, 11) * 6e4;
+  }
+  const fname = k => `${k}_GOES19-ABI-ne-GEOCOLOR-${SAT.res}x${SAT.res}.jpg`;
+
+  /* Directory listing → the last hour's frame keys (newest-relative, so a
+     lagging CDN still yields a full loop), capped at maxFrames. */
+  async function listKeys() {
+    const r = await fetch(SAT.base);
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const html = await r.text();
+    const re = new RegExp('(\\d{11})_GOES19-ABI-ne-GEOCOLOR-' + SAT.res + 'x' + SAT.res + '\\.jpg', 'g');
+    const keys = [...new Set([...html.matchAll(re)].map(m => m[1]))].sort();
+    if (!keys.length) throw new Error('no frames listed');
+    const newestT = parseKey(keys[keys.length - 1]);
+    return keys.map(k => ({ key: k, t: parseKey(k) }))
+               .filter(f => newestT - f.t < SAT.windowMs)
+               .slice(-SAT.maxFrames);
+  }
+
+  /* Fetch one still, crop to the region at native resolution, release the rest. */
+  function loadFrame(f) {
+    return new Promise((resolve, reject) => {
+      const img = new Image();
+      img.crossOrigin = 'anonymous';
+      img.onload = () => {
+        const s = img.naturalWidth / SAT.res;    // robustness if res ever changes
+        const c = document.createElement('canvas');
+        c.width = SAT.crop.w; c.height = SAT.crop.h;
+        c.getContext('2d').drawImage(img,
+          SAT.crop.x * s, SAT.crop.y * s, SAT.crop.w * s, SAT.crop.h * s,
+          0, 0, SAT.crop.w, SAT.crop.h);
+        f.canvas = c;
+        resolve(f);
+      };
+      img.onerror = () => reject(new Error('frame ' + f.key));
+      img.src = SAT.base + fname(f.key);
+    });
+  }
+
+  /* Load-or-top-up: fetches whatever listed frames we don't have (newest first
+     for a fast first paint, then oldest→newest), prunes beyond the window, and
+     (re)starts the loop. Poll failures never blank an already-playing loop. */
+  async function load() {
+    if (loading) return;
+    loading = true;
+    const firstLoad = !frames.length;
+    if (firstLoad) setMsg('Loading satellite…');
+    try {
+      const list = await listKeys();
+      lastChecked = Date.now();
+      const have = new Set(frames.map(f => f.key));
+      const want = list.filter(f => !have.has(f.key));
+      // newest first (early paint), then backfill oldest→newest
+      const order = want.length ? [want[want.length - 1], ...want.slice(0, -1)] : [];
+      let done = list.length - want.length;
+      for (const f of order) {
+        try {
+          await loadFrame(f);
+          frames.push(f);
+          frames.sort((a, b) => a.t - b.t);
+          done++;
+          if (firstLoad) {
+            if (f === order[0]) drawFrame(f);          // newest paints immediately
+            setMsg(`Loading ${done}/${list.length}`);
+          }
+        } catch (e) { console.warn('sat frame skipped:', e.message); }
+      }
+      // prune to the window relative to the newest frame we actually have
+      if (frames.length) {
+        const newestT = frames[frames.length - 1].t;
+        frames = frames.filter(f => newestT - f.t < SAT.windowMs).slice(-SAT.maxFrames);
+      }
+      if (!frames.length) throw new Error('no frames loaded');
+      setMsg('');
+      if (view.classList.contains('open') && !document.hidden) startLoop();
+    } catch (e) {
+      if (!frames.length) setMsg('Satellite unavailable: ' + e.message);
+      else console.warn('sat refresh:', e);
+    } finally {
+      loading = false;
+    }
+  }
+
+  /* Cheap change detection: HEAD latest.jpg; refetch the (~200 KB gzipped)
+     listing only when its last-modified moves. */
+  async function poll() {
+    try {
+      const r = await fetch(SAT.base + 'latest.jpg', { method: 'HEAD', cache: 'no-store' });
+      if (!r.ok) return;
+      lastChecked = Date.now();
+      const lm = r.headers.get('last-modified');
+      if (lm !== lastMod) { lastMod = lm; load(); }
+    } catch (e) { console.warn('sat poll:', e.message); }
+  }
+
+  /* ---- playback ---- */
+  function startLoop() {
+    stopLoop();
+    if (!frames.length) return;
+    if (frames.length === 1) { drawFrame(frames[0]); return; }
+    tick();
+  }
+  function stopLoop() { if (animTimer) { clearTimeout(animTimer); animTimer = null; } }
+  function tick() {
+    if (idx >= frames.length) idx = 0;
+    drawFrame(frames[idx]);
+    const isNewest = idx === frames.length - 1;
+    idx = (idx + 1) % frames.length;
+    animTimer = setTimeout(tick, isNewest ? SAT.dwellMs : SAT.frameMs);
+  }
+
+  /* Draw a frame and stamp its DATE + TIME (updates on every frame swap). */
+  function drawFrame(f) {
+    ctx.drawImage(f.canvas, 0, 0);
+    const d = new Date(f.t);
+    const date = d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+    const time = d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
+    const sub = lastChecked
+      ? ` <span class="rs-sub">· checked ${new Date(lastChecked).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })}</span>`
+      : '';
+    stampEl.innerHTML = `${date} · ${time}${sub}`;
+    stampEl.style.display = 'block';
+  }
+
+  function setMsg(t) { msgEl.textContent = t; msgEl.style.display = t ? 'block' : 'none'; }
+
+  // Debug hooks for verification.
+  window.__sat = {
+    SAT, parseKey, listKeys, load, poll, startLoop, stopLoop, drawFrame,
+    get frames() { return frames; },
+    get idx() { return idx; },
+    get stamp() { return stampEl.textContent; },
+  };
 })();
 
 /* ===================== Forecast accuracy (info panel) ===================== */
