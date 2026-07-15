@@ -1408,8 +1408,8 @@ function renderModelInto(tbody, mIdx, data) {
     crop: { x: 1130, y: 536, w: 620, h: 1348 },
     windowMs: 60 * 60 * 1000,                   // keep the last hour (vs newest frame)
     maxFrames: 13,
-    transMs: 400,                               // cross-fade duration per frame step
-    dwellMs: 1500,                              // hold on the newest frame
+    frameMs: 180,                               // playback pace per frame
+    dwellMs: 1200,                              // hold on the newest frame
     pollMs: 60 * 1000,                          // HEAD latest.jpg while open
   };
 
@@ -1547,49 +1547,28 @@ function renderModelInto(tbody, mIdx, data) {
     } catch (e) { console.warn('sat poll:', e.message); }
   }
 
-  /* ---- playback: continuous cross-fade ----
-     Frames are ~5 min apart, so hard cuts read as choppy. The loop runs on
-     requestAnimationFrame and linearly cross-fades each frame into the next
-     over transMs (two GPU drawImage calls per vsync), holding the newest for
-     dwellMs before cutting back to the start (fading backwards would read as
-     reversed motion). */
-  let raf = null, t0 = 0, lastStampT = 0, curI = 0;
+  /* ---- playback: discrete frames ----
+     Hard cuts at frameMs per step, dwelling on the newest frame before looping.
+     (A cross-fade variant was tried and reverted: ghosting traces + too slow.) */
+  let idx = 0, animTimer = null;
   function startLoop() {
     stopLoop();
     if (!frames.length) return;
     if (frames.length === 1) { drawFrame(frames[0]); return; }
-    t0 = performance.now();
-    raf = requestAnimationFrame(step);
+    tick();
   }
-  function stopLoop() { if (raf) { cancelAnimationFrame(raf); raf = null; } }
-  function step(now) {
-    const n = frames.length;                    // re-read: poll may splice frames
-    const cycle = (n - 1) * SAT.transMs + SAT.dwellMs;
-    const t = (now - t0) % cycle;
-    let i, a;
-    if (t >= (n - 1) * SAT.transMs) { i = n - 1; a = 0; }    // dwell on newest
-    else { i = Math.floor(t / SAT.transMs); a = (t % SAT.transMs) / SAT.transMs; }
-    render(i, a);
-    raf = requestAnimationFrame(step);
-  }
-  /* Blend frame i into i+1 at alpha a; stamp tracks the nearer frame. */
-  function render(i, a) {
-    curI = i;
-    ctx.drawImage(frames[i].canvas, 0, 0);
-    const next = frames[i + 1];
-    if (a > 0 && next) {
-      ctx.globalAlpha = a;
-      ctx.drawImage(next.canvas, 0, 0);
-      ctx.globalAlpha = 1;
-    }
-    const f = (a > 0.5 && next) ? next : frames[i];
-    if (f.t !== lastStampT) setStamp(f.t);
+  function stopLoop() { if (animTimer) { clearTimeout(animTimer); animTimer = null; } }
+  function tick() {
+    if (idx >= frames.length) idx = 0;          // poll may have spliced frames
+    drawFrame(frames[idx]);
+    const isNewest = idx === frames.length - 1;
+    idx = (idx + 1) % frames.length;
+    animTimer = setTimeout(tick, isNewest ? SAT.dwellMs : SAT.frameMs);
   }
   function drawFrame(f) { ctx.drawImage(f.canvas, 0, 0); setStamp(f.t); }
 
   /* Stamp pill: the displayed frame's DATE + TIME (updates as frames swap). */
   function setStamp(tms) {
-    lastStampT = tms;
     const d = new Date(tms);
     const date = d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
     const time = d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
@@ -1604,10 +1583,10 @@ function renderModelInto(tbody, mIdx, data) {
 
   // Debug hooks for verification.
   window.__sat = {
-    SAT, parseKey, listKeys, load, poll, startLoop, stopLoop, drawFrame, render,
+    SAT, parseKey, listKeys, load, poll, startLoop, stopLoop, drawFrame,
     get frames() { return frames; },
-    get curI() { return curI; },
-    get playing() { return !!raf; },
+    get idx() { return idx; },
+    get playing() { return !!animTimer; },
     get stamp() { return stampEl.textContent; },
   };
 })();

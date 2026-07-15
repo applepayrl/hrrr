@@ -186,3 +186,11 @@ Next: commit + push + MANUAL Pages build trigger (see IMPORTANT note above).
   close/reopen instant; zero console errors. NOTE: rAF is suspended in the hidden
   preview pane (document.hidden=true), so live playback can't be observed there —
   drive __sat.render(i,a) manually to test.
+
+## 2026-07-15 · Sat loop v3: cross-fade reverted
+User feedback: the cross-fade left ghosting traces and made the loop feel too slow.
+Reverted playback to the discrete setTimeout tick engine (frameMs=180, dwell=1200);
+KEPT the v2 full-screen crop (620×1348) + object-fit: cover. Comment in code marks
+the cross-fade as tried-and-reverted so it isn't reintroduced.
+Verified: tick advances with per-frame stamps (idx 1→6 over 4.5s in the throttled
+hidden pane), stamp lockstep all 12 frames, close/reopen instant, zero console errors.
