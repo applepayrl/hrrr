@@ -826,6 +826,9 @@ function render(data) {
   // Re-rendering detaches any cell being long-pressed; its touchend then can't
   // bubble anywhere, so dismiss the readout (and its pending timer) here.
   if (window.__hideRainInfo) window.__hideRainInfo();
+  // Same quirk for a swipe in progress: its touchend couldn't bubble either,
+  // which froze ghost tables on screen — abandon the gesture before repainting.
+  if (window.__abortSwipe) window.__abortSwipe();
   const rowsShown = renderModelInto(document.getElementById('rows'), modelIdx, data);
   if (rowsShown === 0) {
     status.textContent = 'No forecast hours in window.';
@@ -1004,6 +1007,7 @@ function renderModelInto(tbody, mIdx, data) {
   function noTransition(el) { if (el) el.style.transition = 'none'; }
   function begin() {
     if (!lastData || animating) return false;
+    cleanup();                              // sweep any stray ghosts from an aborted gesture
     W = pager.clientWidth;
     pager.classList.add('swiping');         // clip ghost overflow (only while active)
     gNext = buildGhost((modelIdx + 1) % N());
@@ -1013,11 +1017,26 @@ function renderModelInto(tbody, mIdx, data) {
     return true;
   }
   function cleanup() {
-    if (gPrev) gPrev.remove();
-    if (gNext) gNext.remove();
+    // By selector, not refs: if begin() ever ran twice the refs were
+    // overwritten and orphaned ghosts would otherwise live forever.
+    pager.querySelectorAll('table.ghost').forEach(g => g.remove());
     gPrev = gNext = null;
     pager.classList.remove('swiping');
   }
+  /* A re-render mid-drag detaches the touch target, so the gesture's
+     touchend can never bubble back to #pager (same iOS quirk as the
+     long-press card): the drag would freeze with ghosts stuck on screen.
+     render() calls this first — abandon the gesture and reset to rest. */
+  function abort() {
+    if (animating) return;              // settle() is driving; it cleans up itself
+    dragging = false; axis = null;
+    if (gPrev || gNext || pager.classList.contains('swiping')) {
+      noTransition(table());
+      table().style.transform = 'none';
+      cleanup();
+    }
+  }
+  window.__abortSwipe = abort;
   /* dir: 1 next, −1 prev, 0 snap back. Slides everything by one panel, then
      (on commit) repaints the real table with the new model at rest. The start
      transform is committed via a forced reflow (not rAF) and a setTimeout
@@ -1408,7 +1427,7 @@ function renderModelInto(tbody, mIdx, data) {
     crop: { x: 1130, y: 536, w: 620, h: 1348 },
     windowMs: 60 * 60 * 1000,                   // keep the last hour (vs newest frame)
     maxFrames: 13,
-    frameMs: 180,                               // playback pace per frame
+    frameMs: 100,                               // playback pace per frame (~10 fps)
     dwellMs: 1200,                              // hold on the newest frame
     pollMs: 60 * 1000,                          // HEAD latest.jpg while open
   };
@@ -1426,7 +1445,7 @@ function renderModelInto(tbody, mIdx, data) {
   let pollTimer = null;
   let lastMod = null;       // last-modified of latest.jpg at last check
   let lastChecked = null;   // ms epoch of the last successful CDN contact
-  let loading = false;      // collapse overlapping load() calls
+  let loading = 0;          // ms epoch when the in-flight load() started; 0 = idle
 
   btn.addEventListener('click', open);
   closeBtn.addEventListener('click', close);
@@ -1458,8 +1477,16 @@ function renderModelInto(tbody, mIdx, data) {
 
   /* Directory listing → the last hour's frame keys (newest-relative, so a
      lagging CDN still yields a full loop), capped at maxFrames. */
+  /* fetch with a hard deadline: a request stalled by iOS backgrounding must
+     reject (not hang forever), or the `loading` latch below never releases. */
+  function fetchT(url, opts, ms) {
+    const ctl = new AbortController();
+    const timer = setTimeout(() => ctl.abort(), ms);
+    return fetch(url, { ...opts, signal: ctl.signal }).finally(() => clearTimeout(timer));
+  }
+
   async function listKeys() {
-    const r = await fetch(SAT.base);
+    const r = await fetchT(SAT.base, {}, 20000);
     if (!r.ok) throw new Error('HTTP ' + r.status);
     const html = await r.text();
     const re = new RegExp('(\\d{11})_GOES19-ABI-ne-GEOCOLOR-' + SAT.res + 'x' + SAT.res + '\\.jpg', 'g');
@@ -1476,7 +1503,10 @@ function renderModelInto(tbody, mIdx, data) {
     return new Promise((resolve, reject) => {
       const img = new Image();
       img.crossOrigin = 'anonymous';
+      // deadline: an image load stalled by backgrounding must settle too
+      const timer = setTimeout(() => { img.src = ''; reject(new Error('timeout ' + f.key)); }, 30000);
       img.onload = () => {
+        clearTimeout(timer);
         const s = img.naturalWidth / SAT.res;    // robustness if res ever changes
         const c = document.createElement('canvas');
         c.width = SAT.crop.w; c.height = SAT.crop.h;
@@ -1486,7 +1516,7 @@ function renderModelInto(tbody, mIdx, data) {
         f.canvas = c;
         resolve(f);
       };
-      img.onerror = () => reject(new Error('frame ' + f.key));
+      img.onerror = () => { clearTimeout(timer); reject(new Error('frame ' + f.key)); };
       img.src = SAT.base + fname(f.key);
     });
   }
@@ -1495,8 +1525,11 @@ function renderModelInto(tbody, mIdx, data) {
      for a fast first paint, then oldest→newest), prunes beyond the window, and
      (re)starts the loop. Poll failures never blank an already-playing loop. */
   async function load() {
-    if (loading) return;
-    loading = true;
+    // `loading` latches out overlapping loads, but a load stalled by iOS
+    // backgrounding could pin it forever (the 4:21-frames-at-7:56 bug) — treat
+    // any "in-flight" load older than 90 s as dead and let a fresh one run.
+    if (loading && Date.now() - loading < 90000) return false;
+    loading = Date.now();
     const firstLoad = !frames.length;
     if (firstLoad) setMsg('Loading satellite…');
     try {
@@ -1527,11 +1560,13 @@ function renderModelInto(tbody, mIdx, data) {
       if (!frames.length) throw new Error('no frames loaded');
       setMsg('');
       if (view.classList.contains('open') && !document.hidden) startLoop();
+      return want.length === 0 || want.some(f => f.canvas);   // fetched what was needed
     } catch (e) {
       if (!frames.length) setMsg('Satellite unavailable: ' + e.message);
       else console.warn('sat refresh:', e);
+      return false;
     } finally {
-      loading = false;
+      loading = 0;
     }
   }
 
@@ -1539,11 +1574,13 @@ function renderModelInto(tbody, mIdx, data) {
      listing only when its last-modified moves. */
   async function poll() {
     try {
-      const r = await fetch(SAT.base + 'latest.jpg', { method: 'HEAD', cache: 'no-store' });
+      const r = await fetchT(SAT.base + 'latest.jpg', { method: 'HEAD', cache: 'no-store' }, 10000);
       if (!r.ok) return;
       lastChecked = Date.now();
       const lm = r.headers.get('last-modified');
-      if (lm !== lastMod) { lastMod = lm; load(); }
+      // Commit lastMod only after a successful load — a failed/stalled load
+      // must retry on the next poll, not silently consume the change.
+      if (lm !== lastMod && await load()) lastMod = lm;
     } catch (e) { console.warn('sat poll:', e.message); }
   }
 

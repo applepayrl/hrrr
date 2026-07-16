@@ -194,3 +194,26 @@ KEPT the v2 full-screen crop (620×1348) + object-fit: cover. Comment in code ma
 the cross-fade as tried-and-reverted so it isn't reintroduced.
 Verified: tick advances with per-frame stamps (idx 1→6 over 4.5s in the throttled
 hidden pane), stamp lockstep all 12 frames, close/reopen instant, zero console errors.
+
+## 2026-07-15 · Swipe-back overlap fix, sat loop speed, stale-frame fix
+1. SWIPE BUG (overlapping tables after a quick return-swipe): root cause reproduced —
+   a background render() mid-drag (e.g. the refresh() fired by the previous settle)
+   detaches the touch target; its touchend never bubbles to #pager (same iOS quirk as
+   the long-press card), so the gesture never settles: ghosts freeze on screen, and
+   the NEXT begin() orphaned them (refs overwritten). Fix: render() now calls
+   window.__abortSwipe (abandon gesture, reset transform, sweep ghosts) next to
+   __hideRainInfo; cleanup() is selector-based (ref-independent); begin() sweeps
+   strays defensively. Repro test: mid-drag render + lift-on-detached-node → clean
+   state (was: 2 stuck ghosts, frozen translate3d(120px), dragging pinned true).
+2. SAT SPEED: frameMs 180 → 100 (~10 fps), same frames, no interpolation.
+3. SAT STALE FRAMES ("Jul 15 4:21 PM · checked 7:56 PM"): two compounding defects —
+   (a) load() had no network deadlines; a fetch stalled by iOS backgrounding never
+   settles, `loading` latch pinned forever, every later load() no-ops while poll
+   keeps updating "checked". Fix: fetchT AbortController deadlines (listing 20s,
+   HEAD 10s), image-load timeout 30s, and a 90s watchdog on the loading latch.
+   (b) poll() committed lastMod BEFORE load() succeeded, consuming the change on
+   failure. Fix: commit only when load() returns success; verified failed load →
+   next same-lm poll retries the listing (2 attempts vs old 1).
+NOTE: sandbox proxy serves a frozen CDN listing (newest stayed 2021Z) — freshness
+can only be end-to-end-verified on a real network; retry/timeout logic verified
+deterministically via fetch stubs.
