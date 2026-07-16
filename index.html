@@ -312,6 +312,7 @@
     display: none;
   }
   #radarStamp .rs-sub, #satStamp .rs-sub { font-weight: 500; color: #4b5563; }
+  #satStamp .rs-warn { font-size: 11px; font-weight: 700; color: #b45309; }
 
   /* ============== GOES satellite loop (cloud button) ============== */
   /* The crop's aspect matches an iPhone 17 Pro screen; cover-fit renders it
@@ -1444,6 +1445,7 @@ function renderModelInto(tbody, mIdx, data) {
   let frames = [];          // {key, t(ms), canvas} ascending by t
   let pollTimer = null;
   let lastMod = null;       // last-modified of latest.jpg at last check
+  let lastModT = 0;         // same, as ms epoch (freshness cross-check vs listing)
   let lastChecked = null;   // ms epoch of the last successful CDN contact
   let loading = 0;          // ms epoch when the in-flight load() started; 0 = idle
 
@@ -1485,8 +1487,11 @@ function renderModelInto(tbody, mIdx, data) {
     return fetch(url, { ...opts, signal: ctl.signal }).finally(() => clearTimeout(timer));
   }
 
-  async function listKeys() {
-    const r = await fetchT(SAT.base, {}, 20000);
+  async function listKeys(bust) {
+    // no-store: the CDN serves the listing with an invalid "cache-control: off"
+    // and no validators, so browsers may heuristically cache it for hours.
+    const url = SAT.base + (bust ? '?_=' + Date.now() : '');
+    const r = await fetchT(url, { cache: 'no-store' }, 20000);
     if (!r.ok) throw new Error('HTTP ' + r.status);
     const html = await r.text();
     const re = new RegExp('(\\d{11})_GOES19-ABI-ne-GEOCOLOR-' + SAT.res + 'x' + SAT.res + '\\.jpg', 'g');
@@ -1533,7 +1538,14 @@ function renderModelInto(tbody, mIdx, data) {
     const firstLoad = !frames.length;
     if (firstLoad) setMsg('Loading satellite…');
     try {
-      const list = await listKeys();
+      let list = await listKeys();
+      // A misbehaving intermediate cache can serve a stale listing even while
+      // HEAD latest.jpg reports fresher data — cross-check and punch through
+      // with a cache-buster once. (No retry loop: if the CDN itself is stalled,
+      // the busted listing is identical and we simply show what exists.)
+      if (lastModT && list.length && lastModT - list[list.length - 1].t > 10 * 60 * 1000) {
+        list = await listKeys(true);
+      }
       lastChecked = Date.now();
       const have = new Set(frames.map(f => f.key));
       const want = list.filter(f => !have.has(f.key));
@@ -1578,6 +1590,7 @@ function renderModelInto(tbody, mIdx, data) {
       if (!r.ok) return;
       lastChecked = Date.now();
       const lm = r.headers.get('last-modified');
+      lastModT = Date.parse(lm) || 0;
       // Commit lastMod only after a successful load — a failed/stalled load
       // must retry on the next poll, not silently consume the change.
       if (lm !== lastMod && await load()) lastMod = lm;
@@ -1604,7 +1617,9 @@ function renderModelInto(tbody, mIdx, data) {
   }
   function drawFrame(f) { ctx.drawImage(f.canvas, 0, 0); setStamp(f.t); }
 
-  /* Stamp pill: the displayed frame's DATE + TIME (updates as frames swap). */
+  /* Stamp pill: the displayed frame's DATE + TIME (updates as frames swap).
+     When even the NEWEST frame is >30 min old, NOAA's feed is stalled (it has
+     happened for hours at a time) — say so, so it doesn't read as an app bug. */
   function setStamp(tms) {
     const d = new Date(tms);
     const date = d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
@@ -1612,7 +1627,11 @@ function renderModelInto(tbody, mIdx, data) {
     const sub = lastChecked
       ? ` <span class="rs-sub">· checked ${new Date(lastChecked).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })}</span>`
       : '';
-    stampEl.innerHTML = `${date} · ${time}${sub}`;
+    const lag = frames.length ? Date.now() - frames[frames.length - 1].t : 0;
+    const warn = lag > 30 * 60 * 1000
+      ? `<br><span class="rs-warn">NOAA feed delayed ${lag >= 36e5 ? (lag / 36e5).toFixed(1) + ' h' : Math.round(lag / 6e4) + ' min'} — showing latest available</span>`
+      : '';
+    stampEl.innerHTML = `${date} · ${time}${sub}${warn}`;
     stampEl.style.display = 'block';
   }
 

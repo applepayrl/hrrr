@@ -217,3 +217,24 @@ hidden pane), stamp lockstep all 12 frames, close/reopen instant, zero console e
 NOTE: sandbox proxy serves a frozen CDN listing (newest stayed 2021Z) — freshness
 can only be end-to-end-verified on a real network; retry/timeout logic verified
 deterministically via fetch stubs.
+
+## 2026-07-15 · Stale sat frames root-caused: UPSTREAM GOES-19 OUTAGE + cache hardening
+Investigation: user's frames pinned at 4:21 PM despite fixes. curl from local machine
+(no browser/sandbox) proved the CDN itself has nothing newer: EVERY GOES-19 product
+(ne, eus, full disk) stopped at 2020-2021Z while GOES-18 West is current → satellite
+feed outage upstream. App was showing the newest frame in existence.
+Hardening shipped anyway:
+- listing fetch now cache:'no-store' (CDN sends invalid "cache-control: off" + no
+  validators → browsers may heuristically cache the listing for hours);
+- cross-check: if HEAD latest.jpg last-modified is >10 min newer than the newest
+  listed key, refetch the listing once with a ?_=Date.now() cache-buster (verified
+  via fetch stub: 2 listing calls, 2nd busted, all no-store);
+- amber stamp badge when newest frame >30 min old: "NOAA feed delayed X h — showing
+  latest available" (live-verified during the actual outage: "delayed 6.0 h").
+
+## 2026-07-15 · GFS vs HRRR nighttime gap: VERIFIED REAL, not a bug
+User saw GFS 30C/10mph vs HRRR 24C/1mph for 10-11p. Raw per-model Open-Meteo API
+returns exactly those values (29.5C/10.1 vs 24.1C/1.4 → app rounds correctly);
+cell_selection land/sea/nearest tested — land cell already used (elev 32m), not an
+ocean-cell artifact. Genuine model disagreement (coarse 0.25° GFS vs 3km HRRR on a
+heat-advection night). No code change.
