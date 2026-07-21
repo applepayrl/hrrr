@@ -109,7 +109,15 @@ What the forecast-conditioned trust table actually says (0-24h):
 - [x] 2 inline SKILL block + marker comments
 - [x] 3 rewrite panel IIFE, add cape to MAIN_URL
 - [x] 4 verify A1-A8b
-- [ ] 5 commit + push + MANUAL Pages build + A8c on the phone
+- [x] 5 committed 501a1c2, pushed, Pages build triggered manually and confirmed
+      `built 501a1c2`; live URL serves the SKILL table (129 storms) and the
+      cape-bearing MAIN_URL. Remaining: open it on the actual phone (A8c).
+
+### To regenerate the table later
+`python3 build_skill.py` (add `--print` to preview). Rarely needed — the ranking
+is stable, so monthly/seasonal is plenty. Re-fetches into .skill-cache/; delete
+that directory to force fresh downloads. Then commit index.html and trigger the
+Pages build manually (it still does not auto-build).
 
 ## ROUND 5 (fifth user message) — accuracy panel "no station reported enough" error
 Diagnosis (live): required ≥20/24 hrs from one station anchored at its newest report; measured coverage KNYC 17/24, KJFK 14/24, KLGA 5/24, KEWR 4/24, KTEB 0/24 → none qualify → error. Causes: (1) threshold 20 > reality (best 17); (2) Central Park null-on-dry-hours; (3) high-freq stations (LGA/EWR) blow the 72-obs limit in ~5h; (4) TEB never reports precip. Sliding the window back 6h lifts KNYC to 20/24.
