@@ -125,6 +125,12 @@
   }
   /* Rain number color is set inline per-cell: cyan (ensemble agrees) →
      green (wide ensemble spread). See spreadColor() in script. */
+  /* Chance of rain, under the amount. Muted and smaller so the mm stays the
+     headline; it sits alone in the cell on hours the selected model calls dry. */
+  .cell-rain u {
+    display: block; text-decoration: none;
+    font-size: 11px; font-weight: 500; color: #64748b; line-height: 1.3;
+  }
 
   /* Long-press readout: pinned top-center, far from a thumb on a table row */
   #rainInfo {
@@ -240,9 +246,6 @@
     font-size: 17px; font-weight: 700; letter-spacing: -0.01em;
     margin: 0 0 4px;
   }
-  #accCard .acc-sub {
-    font-size: 12px; color: #8aa0bf; margin: 0 0 18px; line-height: 1.5;
-  }
   /* Storm header: when it lands, and how much the models agree. */
   .acc-when { font-size: 13px; color: #cbd5e1; margin: 0 0 14px; line-height: 1.5; }
   .acc-when b { color: #f1f5f9; font-weight: 600; }
@@ -268,31 +271,21 @@
   .acc-best em {
     font-style: normal; font-size: 12px; color: #8aa0bf; line-height: 1.4;
   }
-  .acc-note { font-size: 12px; color: #8aa0bf; margin: 0 0 18px; line-height: 1.5; }
-  .acc-head {
-    font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em;
-    color: #64748b; margin: 20px 0 8px;
+  .acc-note { font-size: 13px; color: #8aa0bf; margin: 0 0 18px; line-height: 1.5; }
+  .acc-note b { color: #cbd5e1; font-weight: 600; }
+  .acc-note.dim { font-size: 12px; color: #64748b; margin-top: 16px; }
+  /* Odds list — the one thing here that swiping and long-pressing cannot show. */
+  .acc-odds { border-top: 1px solid rgba(255,255,255,0.1); margin-top: 4px; }
+  .acc-odd {
+    display: flex; align-items: baseline; justify-content: space-between;
+    padding: 10px 0; border-bottom: 1px solid rgba(255,255,255,0.07);
+    font-size: 14px; color: #8aa0bf;
   }
-  .acc-row { display: flex; align-items: center; gap: 10px; margin: 12px 0; }
-  .acc-row b { width: 58px; font-size: 14px; font-weight: 600; }
-  .acc-bar {
-    flex: 1; height: 10px; border-radius: 5px;
-    background: rgba(255,255,255,0.08); overflow: hidden;
+  .acc-odd b {
+    font-size: 17px; font-weight: 700; color: #f1f5f9;
+    font-variant-numeric: tabular-nums;
   }
-  .acc-bar > i {
-    display: block; height: 100%; border-radius: 5px;
-    background: linear-gradient(90deg, #2563eb, #38bdf8);
-  }
-  .acc-row.blend .acc-bar > i { background: linear-gradient(90deg, #15803d, #22c55e); }
-  .acc-row.off b, .acc-row.off span { color: #64748b; }
-  .acc-row span {
-    width: 62px; text-align: right;
-    font-size: 14px; font-weight: 700; font-variant-numeric: tabular-nums;
-  }
-  .acc-row span u { display: block; text-decoration: none; font-weight: 500;
-                    font-size: 11px; color: #8aa0bf; }
-  .acc-for { font-size: 12px; color: #8aa0bf; line-height: 1.6; margin: 10px 0 0; }
-  .acc-for b { color: #cbd5e1; font-weight: 600; }
+  .acc-odd.key b { color: #38bdf8; }
   #accFoot {
     margin-top: 22px; padding-top: 12px;
     border-top: 1px solid rgba(255,255,255,0.1);
@@ -476,6 +469,18 @@ const ENS_EXTRA = [
   {id: 'gem_global',   name: 'GEM'},
 ];
 const ENS_URL = buildUrl(ENS_EXTRA.map(m => m.id).join(','), ['precipitation']);
+// Chance of rain: ~120 runs of the same three global models, each started from a
+// slightly different guess at the current weather. Their AVERAGE is a poor rain
+// amount — 120 runs disagreeing about timing smear one heavy hour into several
+// drizzly ones — so we don't show it. Counting how many are wet gives the one
+// thing no single run can: a real probability. (icon_eu is deliberately absent;
+// its grid stops short of NYC and the API silently ignores it.)
+const PROB_URL = 'https://ensemble-api.open-meteo.com/v1/ensemble' +
+  `?latitude=${COORDS.lat}&longitude=${COORDS.lon}` +
+  '&models=ecmwf_ifs025,gfs025,icon_global&hourly=precipitation' +
+  '&precipitation_unit=mm&timezone=America/New_York&forecast_hours=48';
+const WET_MM = 0.1;          // an hour counts as wet at or above this
+const SHOW_CHANCE_PCT = 20;  // below this the row reads as dry; showing it is noise
 // Fixed member order for the ensemble / long-press readout.
 const ENS_ORDER = ['HRRR', 'GFS', 'ECMWF', 'ICON', 'GEM', 'JMA'];
 
@@ -753,18 +758,29 @@ function spreadColor(spread, val) {
    rounded to 1 decimal (mm — the SAME value that drives the sky icon, so the
    two always agree), colored by the 6-model ensemble spread. No lower-bound
    cutoff: anything that doesn't round to 0.0 is shown. The cell carries the
-   full per-model breakdown + blend for the long-press readout. */
-function rainTd(ens, mm) {
-  if (ens == null) return `<td class="cell-rain"></td>`;   // no model data at all
+   full per-model breakdown + blend for the long-press readout.
+
+   Under it, the share of ~120 ensemble runs that are wet this hour. This is
+   shown even when the selected model says nothing, because that is exactly the
+   case worth surfacing: HRRR can read 0.0 through an evening the ensemble puts
+   at 52%, and swiping between models can never reveal that. Below
+   SHOW_CHANCE_PCT the hour is uncontroversially dry and the number is omitted
+   rather than littering clear stretches with "5%". */
+function rainTd(ens, mm, chance) {
+  const pct = chance ? chance.pct : null;
+  const odds = (pct != null && pct >= SHOW_CHANCE_PCT)
+    ? `<u>${pct}%</u>` : '';
+  if (ens == null) return `<td class="cell-rain">${odds}</td>`;   // no model data
   const data = ens.members
     .map(m => `${m.name} ${m.v == null ? '—' : m.v.toFixed(1)}`).join('|');
-  const attrs = `data-ens="${data}" data-val="${ens.val.toFixed(1)}"`;
+  const attrs = `data-ens="${data}" data-val="${ens.val.toFixed(1)}"` +
+                (pct != null ? ` data-chance="${pct}"` : '');
   // Dry hours show no number but stay long-pressable, so the other models and
   // the blend are still inspectable even when this model says nothing.
-  if (mm == null || mm === 0) return `<td class="cell-rain" ${attrs}></td>`;
+  if (mm == null || mm === 0) return `<td class="cell-rain" ${attrs}>${odds}</td>`;
   const color = spreadColor(ens.spread, mm);
   return `<td class="cell-rain" ${attrs}>` +
-         `<span style="color:${color}">${mm.toFixed(1)}</span></td>`;
+         `<span style="color:${color}">${mm.toFixed(1)}</span>${odds}</td>`;
 }
 
 /* ===================== Time ===================== */
@@ -824,9 +840,38 @@ function cycleModel(dir = 1) { __cycleImpl(dir); }
 /* ===================== Render ===================== */
 let lastData = null;        // cached so cycling model / temp unit is instant
 
+/* The ~120 ensemble runs, kept as a matrix so the panel can add up whole storms
+   across every run, plus the per-hour wet share the table shows. All three
+   centres' members and their control runs count equally — a plain vote. */
+function ensembleRuns(j) {
+  if (!j || !j.hourly || !j.hourly.time) return null;
+  const h = j.hourly;
+  const keys = Object.keys(h).filter(k => k !== 'time');
+  if (!keys.length) return null;
+  const idx = {};
+  h.time.forEach((t, i) => { idx[t] = i; });
+  const runs = keys.map(k => h[k]);
+  const chance = {};
+  h.time.forEach((t, i) => {
+    let wet = 0, n = 0;
+    runs.forEach(s => {
+      const v = s[i];
+      if (v != null) { n++; if (v >= WET_MM) wet++; }
+    });
+    if (n) chance[t] = { pct: Math.round(100 * wet / n), n };
+  });
+  return { idx, runs, chance };
+}
+
 async function refresh() {
   try {
-    const [mRes, eRes] = await Promise.all([fetch(MAIN_URL), fetch(ENS_URL)]);
+    // The chance-of-rain call rides along in parallel and is allowed to fail:
+    // it is extra information, never a reason to show no forecast at all.
+    const [mRes, eRes, pJson] = await Promise.all([
+      fetch(MAIN_URL),
+      fetch(ENS_URL),
+      fetch(PROB_URL).then(r => r.ok ? r.json() : null).catch(() => null),
+    ]);
     if (!mRes.ok) throw new Error(`models HTTP ${mRes.status}`);
     if (!eRes.ok) throw new Error(`ensemble HTTP ${eRes.status}`);
     const [main, ens] = await Promise.all([mRes.json(), eRes.json()]);
@@ -838,7 +883,9 @@ async function refresh() {
       ENS_EXTRA.forEach(m => { row[m.name] = ens.hourly['precipitation_' + m.id][i]; });
       extraByTime[t] = row;
     });
-    lastData = { main, extraByTime };
+    const ensRuns = ensembleRuns(pJson);
+    lastData = { main, extraByTime, ens: ensRuns,
+                 chance: ensRuns ? ensRuns.chance : null };
     render(lastData);
     updateHeader();
   } catch (err) {
@@ -946,7 +993,7 @@ function renderModelInto(tbody, mIdx, data) {
       `<td class="cell-hour">${hourBand(ts)}</td>` +
       `<td class="cell-temp">${tempDisplay(temp[i])}</td>` +
       `<td class="cell-sky">${ICONS[iconKey]}</td>` +
-      rainTd(ens, mm) +
+      rainTd(ens, mm, (data.chance || {})[times[i]]) +
       `<td class="cell-wind">${windIcon(wd[i], Math.round(ws[i]))}</td>`;
     tbody.appendChild(tr);
     rowsShown++;
@@ -2111,18 +2158,14 @@ const SKILL = {
         if (v != null) core[m.name] = v;
       });
       if (!Object.keys(core).length) continue;
-      const all = Object.assign({}, core);
-      const extra = (data.extraByTime || {})[h.time[i]] || {};
-      for (const k in extra) if (extra[k] != null) all[k] = extra[k];
       const capes = MODELS.map(m => h['cape_' + m.id][i]).filter(v => v != null);
-      out.push({ ts, core, all, cape: capes.length ? Math.max.apply(null, capes) : 0 });
+      out.push({ t: h.time[i], ts, core, cape: capes.length ? Math.max.apply(null, capes) : 0 });
     }
     return out;
   }
 
   /* First stretch of forecast rain worth calling a storm. Same detection rule
-     build_skill.py used to build the `amount` and `trust` tables, so the
-     lookups below are conditioned on exactly this. */
+     build_skill.py trained the fallback trust table on. */
   function findStorm(hs) {
     const tot = r => hs.slice(r.a, r.b + 1).reduce((s, x) => s + mean(x.core), 0);
     let run = null, dry = 0;
@@ -2140,204 +2183,133 @@ const SKILL = {
     return run && tot(run) >= MIN_MM ? run : null;
   }
 
+  /* Storm totals across every ensemble run → the odds the panel exists to show. */
+  function odds(ens, win) {
+    if (!ens) return null;
+    const totals = [];
+    ens.runs.forEach(series => {
+      let sum = 0, ok = true;
+      for (const x of win) {
+        const i = ens.idx[x.t];
+        if (i == null || series[i] == null) { ok = false; break; }
+        sum += series[i];
+      }
+      if (ok) totals.push(sum);
+    });
+    if (totals.length < 20) return null;
+    totals.sort((a, b) => a - b);
+    const at = p => totals[Math.min(totals.length - 1, Math.floor(p * totals.length))];
+    const share = mm => Math.round(100 * totals.filter(v => v >= mm).length / totals.length);
+    return {
+      n: totals.length,
+      mid: at(0.5), lo: at(0.10), hi: at(0.90),
+      anyRain: share(0.2), quarterIn: share(0.2 * IN), inch: share(IN),
+    };
+  }
+
+  function sliceName(win) {
+    const m = win[0].ts.getMonth() + 1;
+    const season = (m >= 5 && m <= 10) ? 'warm' : 'cool';
+    const cape = Math.max.apply(null, win.map(x => x.cape));
+    return season + '_' + (cape >= CAPE_CONV ? 'convective' : 'stratiform');
+  }
+
+  const fmtDT = d => d.toLocaleString('en-US', { weekday: 'short', hour: 'numeric', minute: '2-digit' });
+  const mm = v => v >= 10 ? Math.round(v) : Math.round(v * 10) / 10;
   const band = (list, key, v) => {
     if (!list) return null;
     for (const b of list) if (v <= b[key]) return b;
     return list[list.length - 1];
   };
 
-  function sliceName(win) {
-    const m = win[0].ts.getMonth() + 1;              // 1-12
-    const season = (m >= 5 && m <= 10) ? 'warm' : 'cool';
-    const cape = Math.max.apply(null, win.map(x => x.cape));
-    return season + '_' + (cape >= CAPE_CONV ? 'convective' : 'stratiform');
+  /* The odds block. Deliberately the only substantial thing in the panel: the
+     per-model amounts and the historical ranking bars that used to live here
+     just restated what swiping and long-pressing already show, and the ranking
+     barely moves between storms anyway. */
+  function oddsBlock(o) {
+    const row = (label, val, strong) =>
+      `<div class="acc-odd${strong ? ' key' : ''}"><span>${label}</span><b>${val}</b></div>`;
+    return `<div class="acc-best"><i>${mm(o.mid)} mm</i>` +
+      `<em>${(o.mid / IN).toFixed(2)} in<br>most likely</em></div>` +
+      `<p class="acc-note">Could reasonably be <b>${mm(o.lo)}–${mm(o.hi)} mm</b> ` +
+      `(${(o.lo / IN).toFixed(2)}–${(o.hi / IN).toFixed(2)} in).</p>` +
+      `<div class="acc-odds">` +
+      row('Any rain at all', o.anyRain + '%', true) +
+      row('Over 0.2 in (5 mm)', o.quarterIn + '%') +
+      row('Over 1 in (25 mm)', o.inch + '%') +
+      `</div>` +
+      `<p class="acc-note dim">From ${o.n} runs of ECMWF, GFS and ICON, each started ` +
+      `from a slightly different guess at today's weather.</p>`;
   }
 
-  const SLICE_LABEL = {
-    cool_stratiform: 'cool-season steady rain',
-    cool_convective: 'cool-season convective',
-    warm_stratiform: 'warm-season steady rain',
-    warm_convective: 'warm-season showers &amp; storms',
-  };
-
-  const fmtDT = d => d.toLocaleString('en-US', { weekday: 'short', hour: 'numeric', minute: '2-digit' });
-  const mm = v => v >= 10 ? Math.round(v) : Math.round(v * 10) / 10;
-
-  /* ---- the two views ---- */
-
-  function stormView(hs, run) {
-    const win = hs.slice(run.a, run.b + 1);
-    // The window starts at the current hour, so a storm already raining reads
-    // as a negative lead — say so rather than printing "starts in -1 h".
-    const startsIn = Math.round((win[0].ts.getTime() - Date.now()) / 36e5);
-    const whenLbl = startsIn <= 0 ? 'under way now'
-                  : startsIn === 1 ? 'starts within the hour'
-                  : `starts in ${startsIn} h`;
-    const lead = startsIn < 24 ? 'L0' : 'L1';
-    const leadLbl = lead === 'L0' ? 'today' : 'a day or more out';
-
-    // Per-model storm totals. A model absent for ANY hour of the window (HRRR
-    // past its horizon) is reported as no-data rather than a misleading low sum.
-    const totals = {};
-    ENS_ORDER.forEach(name => {
-      if (win.every(x => x.all[name] != null)) {
-        totals[name] = win.reduce((s, x) => s + x.all[name], 0);
-      }
-    });
-    const blendTot = win.reduce((s, x) => s + mean(x.all), 0);
-    const coreTots = MODELS.map(m => totals[m.name]).filter(v => v != null);
-    const avg = coreTots.reduce((a, b) => a + b, 0) / coreTots.length;
-    const cv = avg > 0
-      ? Math.sqrt(coreTots.reduce((s, v) => s + (v - avg) * (v - avg), 0) / coreTots.length) / avg
-      : 0;
-
+  /* Fallback when the ensemble call failed: the backtested spread→error table,
+     which needs no network. Less direct than real odds but never unavailable. */
+  function spreadBlock(win, lead) {
+    if (!SKILL) return '';
+    const tots = MODELS.map(m => win.reduce((s, x) => s + (x.core[m.name] || 0), 0))
+      .filter(v => v > 0);
+    if (tots.length < 2) return '';
+    const avg = tots.reduce((a, b) => a + b, 0) / tots.length;
+    const cv = Math.sqrt(tots.reduce((s, v) => s + (v - avg) * (v - avg), 0) / tots.length) / avg;
     const tr = band((SKILL.trust || {})[lead], 'cvMax', cv);
-    const am = band((SKILL.amount || {})[lead], 'maxIn', blendTot / IN);
-    const slice = sliceName(win);
-    const sk = ((SKILL.slices || {})[slice] || {})[lead] || (SKILL.lead || {})[lead] || {};
-
-    // Trust tone from where this storm's agreement falls among the three bands.
+    if (!tr) return '';
     const bands = (SKILL.trust || {})[lead] || [];
-    const idx = bands.indexOf(tr);
-    const tone = idx === 0 ? 'good' : idx === 1 ? 'mixed' : 'poor';
-    const headline = idx === 0 ? 'The models agree'
-                   : idx === 1 ? 'The models partly disagree'
-                   : 'The models disagree';
-
-    let trust = '';
-    if (tr) {
-      const fizz = tr.dud >= 0.1
-        ? ` On ${Math.round(tr.dud * 100)}% of storms this unsettled, almost no rain fell.`
-        : tr.dud === 0 ? ' None of them fizzled out.' : '';
-      trust = `<div class="acc-trust ${tone}"><b>${headline}</b><span>` +
-        `Totals typically land within ${tr.err}% — ` +
-        `${tr.lo}–${tr.hi}× the number below.${fizz} ` +
-        `From ${tr.n} past storms forecast with this much ${idx === 0 ? 'agreement' : 'spread'}.` +
-        `</span></div>`;
-    }
-
-    let note = '';
-    if (am && am.actual != null) {
-      const dir = am.actual >= 1.08 ? `usually a little more than forecast (${am.actual}×)`
-                : am.actual <= 0.92 ? `usually a little less than forecast (${am.actual}×)`
-                : 'about what is forecast';
-      note = `<p class="acc-note">Storms forecast this size deliver ${dir}` +
-             (am.dud >= 0.1 ? `, and ${Math.round(am.dud * 100)}% produce almost nothing` : '') +
-             `.</p>`;
-    }
-
-    // Timing comes from HRRR — measurably the best at it — falling back to the
-    // blend if HRRR does not reach this far out.
-    let when = '';
-    const timing = (SKILL.timing || {}).L0 || {};
-    const peakOf = name => {
-      let best = -1, at = null;
-      win.forEach(x => { if (x.all[name] != null && x.all[name] > best) { best = x.all[name]; at = x.ts; } });
-      return best > 0 ? at : null;
-    };
-    const pk = peakOf('HRRR') || peakOf('ECMWF');
-    if (pk) {
-      const src = peakOf('HRRR') ? 'HRRR' : 'ECMWF';
-      const t = timing[src];
-      when = `<b>Heaviest around ${pk.toLocaleTimeString('en-US', { hour: 'numeric' })}</b>` +
-             (t ? ` — ${src} lands that within 2 h ${Math.round(t.within2 * 100)}% of the time` : '');
-    }
-
-    return {
-      title: 'Next storm',
-      body:
-        `<div class="acc-when">Rain <b>${fmtDT(win[0].ts)} – ${fmtDT(win[win.length - 1].ts)}</b>` +
-        ` · ${whenLbl}</div>` +
-        trust +
-        `<div class="acc-best"><i>${mm(blendTot)} mm</i>` +
-        `<em>${(blendTot / IN).toFixed(2)} in<br>blend of ${Object.keys(totals).length} models</em></div>` +
-        note +
-        (when ? `<p class="acc-note">${when}</p>` : '') +
-        `<div class="acc-head">Track record · ${SLICE_LABEL[slice] || slice} · ${leadLbl}</div>` +
-        bars(sk, totals, blendTot, true) +
-        forLine(timing),
-      lead, slice,
-    };
+    const i = bands.indexOf(tr);
+    const tone = i === 0 ? 'good' : i === 1 ? 'mixed' : 'poor';
+    const head = i === 0 ? 'The models agree' : i === 1 ? 'The models partly disagree' : 'The models disagree';
+    return `<div class="acc-trust ${tone}"><b>${head}</b><span>` +
+      `Chance-of-rain is unavailable right now. On past storms with this much ` +
+      `${i === 0 ? 'agreement' : 'spread'}, totals landed within ${tr.err}% ` +
+      `(${tr.lo}–${tr.hi}× forecast)${tr.dud >= 0.1 ? `, and ${Math.round(tr.dud * 100)}% produced almost nothing` : ''}.` +
+      `</span></div>`;
   }
 
-  function dryView(hs) {
-    // No storm in the window: fall back to how the models do at this time of
-    // year, which is the only honest thing to show and can never fail.
-    const win = hs.length ? hs : [{ ts: new Date(), cape: 0 }];
-    const slice = sliceName(win);
-    const sk = ((SKILL.slices || {})[slice] || {}).L1 || (SKILL.lead || {}).L1 || {};
-    return {
-      title: 'Rain models',
-      body:
-        `<div class="acc-when">No rain forecast in the next 48 h.</div>` +
-        `<div class="acc-head">Track record · ${SLICE_LABEL[slice] || slice} · a day or more out</div>` +
-        bars(sk, {}, null, false) + forLine((SKILL.timing || {}).L0 || {}),
-      lead: 'L1', slice,
-    };
-  }
-
-  /* Ranked bars. Blend first and highlighted: it beat every single model in the
-     backtest, so leading with a model name would point the user at a worse
-     number. A model with no data over the window is shown as such, never 0. */
-  function bars(sk, totals, blendTot, perStorm) {
-    const head = { name: 'Blend', score: sk.BLEND, tot: blendTot, cls: 'blend' };
-    const scored = MODELS.map(m =>
-      ({ name: m.name, score: sk[m.name], tot: totals[m.name], cls: '' }));
-    scored.sort((a, b) => (b.score == null ? -1 : b.score) - (a.score == null ? -1 : a.score));
-    const max = Math.max.apply(null, [head].concat(scored).map(r => r.score || 0).concat([1]));
-    return [head].concat(scored).map(r => {
-      // A model that does not reach this storm (HRRR past its horizon) is shown
-      // as unusable rather than as a track-record bar you cannot act on.
-      const off = r.score == null || (perStorm && r.tot == null);
-      const w = off ? 0 : Math.round(100 * r.score / max);
-      const val = off ? 'no data' : r.score.toFixed(0) + '%';
-      const sub = r.tot != null ? `<u>${mm(r.tot)} mm</u>` : '';
-      return `<div class="acc-row ${r.cls}${off ? ' off' : ''}"><b>${r.name}</b>` +
-        `<div class="acc-bar"><i style="width:${w}%"></i></div>` +
-        `<span>${val}${sub}</span></div>`;
-    }).join('');
-  }
-
-  function forLine(timing) {
-    const h = timing.HRRR, e = timing.ECMWF;
-    if (!h || !e) return '';
-    return `<p class="acc-for"><b>ECMWF</b> is the one to trust on amounts — it misses only ` +
-      `${Math.round(e.wetMissed * 100)}% of wet hours. <b>HRRR</b> is the one to trust on timing ` +
-      `(heaviest hour within 2 h ${Math.round(h.within2 * 100)}% of the time) and rarely cries wolf ` +
-      `(${Math.round(h.wetRight * 100)}% of the hours it calls wet really are) — but it misses ` +
-      `${Math.round(h.wetMissed * 100)}% of wet hours, so never read it as an all-clear.</p>`;
-  }
-
-  /* ---- render ---- */
+  const FOOT_RANK = SKILL
+    ? `Across ${SKILL.storms} storms since ${(SKILL.span || '').slice(0, 7)}: ECMWF edges GFS on ` +
+      `amounts, HRRR trails but times the heaviest hour best, and the blend beats all three. ` +
+      `The order almost never changes, which is why it is a footnote and not a chart.`
+    : '';
 
   function renderAcc() {
     const body = document.getElementById('accBody');
     const foot = document.getElementById('accFoot');
     const title = document.getElementById('accTitle');
-    if (!SKILL) {                       // table never generated — say so plainly
-      title.textContent = 'Rain models';
-      body.innerHTML = '<div class="acc-status">Skill table missing — run build_skill.py.</div>';
-      foot.textContent = '';
-      return;
-    }
     if (!lastData) {
-      title.textContent = 'Rain models';
+      title.textContent = 'Chance of rain';
       body.innerHTML = '<div class="acc-status">Waiting for the forecast…</div>';
       foot.textContent = '';
       return;
     }
     const hs = hours(lastData);
     const run = hs.length ? findStorm(hs) : null;
-    const v = run ? stormView(hs, run) : dryView(hs);
-    title.textContent = v.title;
-    body.innerHTML = v.body;
-    foot.innerHTML =
-      `Scored on ${SKILL.storms} storms, ${SKILL.span}, against the Central Park ` +
-      `hourly gauge (~2 km from 10065 — enough to matter for scattered summer storms).<br>` +
-      `Score = hour-by-hour overlap with the gauge: 100% exact, 0% no overlap at all.<br>` +
-      `HRRR is built for the first 18 h, but the shortest archive available is 0–24 h ` +
-      `averaged, so its short-fuse edge is not measured here.<br>` +
-      `Table built ${SKILL.built}.`;
+
+    if (!run) {
+      title.textContent = 'Chance of rain';
+      const next = hs.filter(x => (lastData.chance || {})[x.t])
+        .map(x => ({ t: x.ts, p: lastData.chance[x.t].pct }))
+        .sort((a, b) => b.p - a.p)[0];
+      body.innerHTML = `<div class="acc-when">No storm in the next 48 h.</div>` +
+        (next && next.p >= 15
+          ? `<p class="acc-note">The wettest hour ahead is ` +
+            `<b>${next.t.toLocaleString('en-US', { weekday: 'short', hour: 'numeric' })}</b>` +
+            ` at ${next.p}% — still more likely dry than not.</p>`
+          : `<p class="acc-note">Every hour ahead is under 15%.</p>`);
+      foot.innerHTML = FOOT_RANK;
+      return;
+    }
+
+    const win = hs.slice(run.a, run.b + 1);
+    const startsIn = Math.round((win[0].ts.getTime() - Date.now()) / 36e5);
+    const whenLbl = startsIn <= 0 ? 'under way now'
+                  : startsIn === 1 ? 'starts within the hour'
+                  : `starts in ${startsIn} h`;
+    const o = odds(lastData.ens, win);
+    title.textContent = 'Next storm';
+    body.innerHTML =
+      `<div class="acc-when">Rain <b>${fmtDT(win[0].ts)} – ${fmtDT(win[win.length - 1].ts)}</b>` +
+      ` · ${whenLbl}</div>` +
+      (o ? oddsBlock(o) : spreadBlock(win, startsIn < 24 ? 'L0' : 'L1'));
+    foot.innerHTML = FOOT_RANK;
   }
 
   document.getElementById('infoBtn').addEventListener('click', () => {
@@ -2348,7 +2320,7 @@ const SKILL = {
     () => view.classList.remove('open'));
 
   // Debug hooks for verification.
-  window.__acc = { renderAcc, hours, findStorm, stormView, dryView, sliceName, band, SKILL };
+  window.__acc = { renderAcc, hours, findStorm, odds, sliceName, band, SKILL };
 })();
 
 /* ===================== Boot ===================== */

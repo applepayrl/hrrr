@@ -1,5 +1,61 @@
 # progress.md — July 6 session
 
+## 2026-07-21 (later) · CHANCE OF RAIN — the panel rebuild was mostly redundant
+
+### User's verdict on the rebuild above
+"This isn't really helpful — I can already see each of the 3 models by swiping,
+and the 6-model blend by long-pressing." Correct. Of the panel shipped in 501a1c2,
+the per-model amounts duplicated swipe, the blend duplicated long-press, and the
+ranking bars are near-constant so they can't change a decision. Root cause: the
+panel optimised the question "which model" AFTER the backtest had already shown
+that question has no exploitable answer.
+
+### What was actually missing: probability
+Added the Open-Meteo ENSEMBLE api — ~120 runs of ECMWF(51) + GEFS(31) + ICON(40),
+each started from a slightly nudged guess at the current state. 28-42 KB, ~0.6 s.
+KEY POINT for future sessions: the ensemble is NOT a 4th model and NOT more
+accurate. Its hourly AVERAGE is flat drizzle (runs disagree on timing, so
+averaging smears one heavy hour into several light ones) and its storm total
+matches the existing blend (7.7 vs 6.9 mm on the test case). Do NOT add it as a
+4th cycle option — that was considered and rejected with data. Its whole value is
+that counting wet runs gives a probability, which a single run cannot.
+- models=ecmwf_ifs025,gfs025,icon_global → 122 series (119 members + 3 controls).
+- icon_eu is silently IGNORED at this latitude (byte-identical response) — its
+  grid stops short of NYC. Don't add it back.
+- No historical ensemble archive exists (verified: returns all nulls), so none of
+  this could be backtested at 10065. It is additive, not validated-better.
+
+### Shipped
+1. mm column now shows the chance of rain beneath the amount (`.cell-rain u`).
+   Shown even when the selected model says 0.0 — that is the valuable case: HRRR
+   read 0.0 all evening while 122 runs said 77/79/73%. Hidden below
+   SHOW_CHANCE_PCT=20 so clear stretches stay clean. WET_MM=0.1 threshold.
+2. Panel cut from ~270 lines to ~190 and reframed as odds: most likely total,
+   10th-90th range, P(any rain), P(>0.2in), P(>1in). Removed per-model amounts,
+   ranking bars, and the what-each-model-is-for paragraph. Historical ranking
+   survives as a single footnote line.
+3. PROB_URL fetch rides along in Promise.all but is allowed to fail — the table
+   renders without it and the panel falls back to the backtested spread→error
+   table (which needs no network). Verified both directions.
+
+### Verified 2026-07-21 (local, 375x812)
+- Per-hour percentages match hand-recomputation from raw members for 5 hours
+  (77/70/67/78/79%), n=122.
+- Storm odds match an independent recomputation on all 7 figures
+  (mid 5.1, 10-90 1.7-16, any 99%, >0.2in 51%, >1in 3%).
+- Ensemble endpoint stubbed to reject → table still renders, no percentages,
+  panel falls back to the spread table, recovers on next refresh.
+- No regressions: 6-model long-press data intact, cycling keeps percentages,
+  radar/sat/swipe hooks present, zero mm-shown-without-wet-icon mismatches,
+  zero console errors.
+- Dry injected forecast → "No storm in the next 48 h. Every hour ahead is under
+  15%." Never an error.
+
+### Still not done
+- Phase 2/3/4 from the plan (Fly, radar nowcast, MRMS truth) — untouched.
+- build_skill.py + the SKILL table are still used, but only for the footnote and
+  the offline fallback. If the ensemble proves reliable they could go entirely.
+
 ## 2026-07-21 · Accuracy panel REBUILD (storm-oriented) — IN PROGRESS
 
 Plan: /Users/rlahoud/.claude/plans/when-i-press-the-spicy-seahorse.md (approved).
