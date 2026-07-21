@@ -243,8 +243,38 @@
   #accCard .acc-sub {
     font-size: 12px; color: #8aa0bf; margin: 0 0 18px; line-height: 1.5;
   }
-  .acc-row { display: flex; align-items: center; gap: 12px; margin: 14px 0; }
-  .acc-row b { width: 64px; font-size: 15px; font-weight: 600; }
+  /* Storm header: when it lands, and how much the models agree. */
+  .acc-when { font-size: 13px; color: #cbd5e1; margin: 0 0 14px; line-height: 1.5; }
+  .acc-when b { color: #f1f5f9; font-weight: 600; }
+  .acc-trust {
+    border-radius: 10px; padding: 11px 13px; margin: 0 0 18px;
+    font-size: 13px; line-height: 1.5;
+    background: rgba(255,255,255,0.05);
+    border-left: 3px solid #64748b;
+  }
+  .acc-trust.good  { border-left-color: #22c55e; }
+  .acc-trust.mixed { border-left-color: #f59e0b; }
+  .acc-trust.poor  { border-left-color: #ef4444; }
+  .acc-trust b { display: block; font-size: 14px; margin-bottom: 2px; color: #f1f5f9; }
+  .acc-trust span { color: #8aa0bf; }
+  /* Headline number. */
+  .acc-best {
+    display: flex; align-items: baseline; gap: 10px; margin: 0 0 6px;
+  }
+  .acc-best i {
+    font-style: normal; font-size: 30px; font-weight: 700; letter-spacing: -0.02em;
+    font-variant-numeric: tabular-nums;
+  }
+  .acc-best em {
+    font-style: normal; font-size: 12px; color: #8aa0bf; line-height: 1.4;
+  }
+  .acc-note { font-size: 12px; color: #8aa0bf; margin: 0 0 18px; line-height: 1.5; }
+  .acc-head {
+    font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em;
+    color: #64748b; margin: 20px 0 8px;
+  }
+  .acc-row { display: flex; align-items: center; gap: 10px; margin: 12px 0; }
+  .acc-row b { width: 58px; font-size: 14px; font-weight: 600; }
   .acc-bar {
     flex: 1; height: 10px; border-radius: 5px;
     background: rgba(255,255,255,0.08); overflow: hidden;
@@ -253,10 +283,16 @@
     display: block; height: 100%; border-radius: 5px;
     background: linear-gradient(90deg, #2563eb, #38bdf8);
   }
+  .acc-row.blend .acc-bar > i { background: linear-gradient(90deg, #15803d, #22c55e); }
+  .acc-row.off b, .acc-row.off span { color: #64748b; }
   .acc-row span {
-    width: 48px; text-align: right;
-    font-size: 15px; font-weight: 700; font-variant-numeric: tabular-nums;
+    width: 62px; text-align: right;
+    font-size: 14px; font-weight: 700; font-variant-numeric: tabular-nums;
   }
+  .acc-row span u { display: block; text-decoration: none; font-weight: 500;
+                    font-size: 11px; color: #8aa0bf; }
+  .acc-for { font-size: 12px; color: #8aa0bf; line-height: 1.6; margin: 10px 0 0; }
+  .acc-for b { color: #cbd5e1; font-weight: 600; }
   #accFoot {
     margin-top: 22px; padding-top: 12px;
     border-top: 1px solid rgba(255,255,255,0.1);
@@ -381,13 +417,10 @@
 <div id="rainInfo"></div>
 
 <div id="accView">
-  <button id="accClose" aria-label="Close accuracy panel">✕</button>
+  <button id="accClose" aria-label="Close rain model panel">✕</button>
   <div id="accCard">
-    <h2>Rain forecast accuracy</h2>
-    <p class="acc-sub">How closely each model's run from ~24 h earlier matched the
-      rain actually measured over the most recent 24 observed hours.
-      100% = every hour exact; 0% = no overlap at all (missed all the rain).</p>
-    <div id="accBody"><div class="acc-status">Scoring…</div></div>
+    <h2 id="accTitle">Rain models</h2>
+    <div id="accBody"></div>
     <div id="accFoot"></div>
   </div>
 </div>
@@ -426,9 +459,11 @@ const MODELS = [
   {id: 'gfs_global',   name: 'GFS'},
   {id: 'ecmwf_ifs025', name: 'ECMWF'},
 ];
+// `cape` is not displayed: the accuracy panel uses it to tell a convective storm
+// from a steady one, which is the strongest predictor of how well ANY model does.
 const MAIN_URL = buildUrl(MODELS.map(m => m.id).join(','), [
   'temperature_2m','cloud_cover_low','cloud_cover_mid','cloud_cover_high',
-  'precipitation','weather_code','wind_speed_10m','wind_direction_10m','is_day'
+  'precipitation','weather_code','wind_speed_10m','wind_direction_10m','is_day','cape'
 ]);
 // Precip ensemble: 3 more independent globals fetched in one request; combined
 // with the selectable three (above) into a 6-model outlier-rejected mean.
@@ -1647,230 +1682,673 @@ function renderModelInto(tbody, mIdx, data) {
   };
 })();
 
-/* ===================== Forecast accuracy (info panel) ===================== */
-/* Scores how well each selectable model (HRRR/GFS/ECMWF) forecast the rain of
-   the most recent 24 OBSERVED hours near 10065.
+/* ===================== Rain models (info panel) ===================== */
+/* Answers the question this button actually gets pressed for: a storm is
+   coming — how should I read it, and how much should I trust the number?
 
-   Actual rain: NWS station obs (precipitationLastHour, mm), nearest first —
-   KNYC (Central Park, ~2 km from 10065) then LGA/JFK/EWR/TEB. A METAR value
-   stamped ~HH:51 covers the hour ending ≈(HH+1):00, which is exactly
-   Open-Meteo's convention (value at T = precip over the hour ending at T), so
-   each obs is bucketed to its ceil-hour and the latest report per bucket wins.
-   Coverage note (why this isn't just "the last 24 h"): Central Park is a
-   limited co-op site that leaves precip null on many dry hours, so the most
-   recent 24 h are often only partly reported. So we SLIDE the window's end back
-   up to maxSlideH from the newest report to land on the best-covered 24-h
-   stretch, and take the NEAREST station that reaches minObsHours (falling back
-   to the single best-covered station if none do). Missing hours carry v:null
-   and are simply skipped — every model is scored on the SAME present hours, so
-   gaps can't bias the ranking.
+   The old panel scored the past 24 observed hours live and usually failed
+   ("no station reported enough of the past 24 h"), because it is normally
+   pressed during a dry spell, when there is by construction nothing to score.
+   Nothing here is computed from recent rain, so that failure mode is gone: the
+   panel reads a precomputed table and the forecast already in `lastData`, and
+   issues no network request at all.
 
-   Forecast: each model's run from ~24 h earlier (Open-Meteo previous-runs API,
-   precipitation_previous_day1 — its finest run offset; per-user decision this
-   replaces the unavailable "run from 6 h ago"). Same basis for all 3 models,
-   scored over the SAME set of hours (obs present AND all 3 forecasts present),
-   so the comparison is strictly apples-to-apples.
+   SKILL below is built by build_skill.py from 129 storms over 2 years, scored
+   against the Central Park hourly gauge. What that backtest found, and why the
+   panel is shaped like this:
 
-   Score — quantitative Sørensen–Dice similarity between the forecast and
-   observed hourly-rain series (equivalently 1 − Bray–Curtis dissimilarity, a
-   standard hydrology metric for comparing rainfall series):
+   • The ranking barely moves. ECMWF >= GFS > HRRR in 11 of 12 season/storm-type
+     slices, at every lead. So the ranking is shown as context, not as a
+     per-storm verdict — the honest per-storm signal is elsewhere.
+   • The equal-weight blend beats every single model, significantly, so it is
+     the headline number rather than "whichever model is winning".
+   • Model AGREEMENT is the one thing that genuinely varies storm to storm and
+     predicts the outcome: when the three agree the total lands within ~21% and
+     never fizzles; when they diverge the miss is ~46% and 17% of the time the
+     storm does not happen at all. That drives the trust line.
+   • A single ranking hides what each model is FOR. HRRR is precise but shy —
+     best at timing the heaviest hour (median 1 h error) and its wet hours are
+     right 85% of the time, but it misses 43% of wet hours. ECMWF is the mirror:
+     misses only 12%, but only 63% of its wet hours verify. So amounts come from
+     ECMWF/blend and timing from HRRR.
 
-        score = 100 · 2·Σ min(fᵢ, oᵢ) / Σ (fᵢ + oᵢ)
+   Backtested and REJECTED — do not reintroduce (all lost to the plain blend):
+   weighting by recent form, following the in-storm leader after 6 h, rescaling
+   the rest of a storm by its first-6 h error, skill-weighted blending, fitted
+   calibration of totals, and season/regime conditioning of the ranking.
 
-   over the scored hours i. Properties (why this, not exp(−MAE)):
-     • 100% ⇔ fᵢ = oᵢ every hour (perfect).
-     • 0% ⇔ zero overlap — every rainy hour was forecast dry and every forecast
-       of rain fell on a dry hour. The user's worst case (all 24 h rained, model
-       said 0) lands exactly here. Ordinary misses do NOT collapse to 0.
-     • Scale-free: over-forecasting 2× → 67%, 3× → 50%; it spreads scores across
-       the range and needs no tuned constant. Grounded in what actually fell,
-       not an arbitrary mm scale. */
+   Known limits, stated in the footer: HRRR is built for 0–18 h but the shortest
+   archived lead is 0–24 h averaged, so its real nowcast edge cannot be measured
+   here and is not claimed either way; and the gauge is Central Park, ~2 km from
+   10065, which matters for scattered summer convection. */
+
+/* ===== SKILL TABLE — generated by build_skill.py, do not hand-edit ===== */
+const SKILL = {
+ "built": "2026-07-21",
+ "storms": 129,
+ "fstorms": {
+  "L0": 138,
+  "L1": 142,
+  "L2": 151
+ },
+ "span": "2024-07-05..2026-07-18",
+ "gauge": "NYC",
+ "lead": {
+  "L0": {
+   "HRRR": 36.1,
+   "GFS": 40.9,
+   "ECMWF": 43.8,
+   "BLEND": 47.0
+  },
+  "L1": {
+   "HRRR": 26.0,
+   "GFS": 35.7,
+   "ECMWF": 37.1,
+   "BLEND": 41.2
+  },
+  "L2": {
+   "GFS": 26.9,
+   "ECMWF": 30.7,
+   "BLEND": 36.1
+  }
+ },
+ "slices": {
+  "cool_stratiform": {
+   "n": 59,
+   "L0": {
+    "HRRR": 52.8,
+    "GFS": 54.8,
+    "ECMWF": 55.9,
+    "BLEND": 60.4
+   },
+   "L1": {
+    "HRRR": 37.5,
+    "GFS": 47.7,
+    "ECMWF": 49.9,
+    "BLEND": 52.8
+   },
+   "L2": {
+    "GFS": 36.6,
+    "ECMWF": 41.1,
+    "BLEND": 46.0
+   }
+  },
+  "cool_convective": {
+   "n": 3,
+   "L0": {
+    "HRRR": 29.8,
+    "GFS": 35.7,
+    "ECMWF": 41.3,
+    "BLEND": 42.8
+   },
+   "L1": {
+    "HRRR": 22.5,
+    "GFS": 33.5,
+    "ECMWF": 34.2,
+    "BLEND": 37.9
+   },
+   "L2": {
+    "GFS": 25.8,
+    "ECMWF": 30.0,
+    "BLEND": 33.6
+   }
+  },
+  "warm_stratiform": {
+   "n": 24,
+   "L0": {
+    "HRRR": 30.2,
+    "GFS": 36.5,
+    "ECMWF": 42.6,
+    "BLEND": 45.6
+   },
+   "L1": {
+    "HRRR": 19.7,
+    "GFS": 33.2,
+    "ECMWF": 34.6,
+    "BLEND": 39.0
+   },
+   "L2": {
+    "GFS": 23.7,
+    "ECMWF": 29.7,
+    "BLEND": 35.1
+   }
+  },
+  "warm_convective": {
+   "n": 43,
+   "L0": {
+    "HRRR": 19.7,
+    "GFS": 27.1,
+    "ECMWF": 29.4,
+    "BLEND": 31.3
+   },
+   "L1": {
+    "HRRR": 15.9,
+    "GFS": 22.4,
+    "ECMWF": 22.7,
+    "BLEND": 28.1
+   },
+   "L2": {
+    "GFS": 16.6,
+    "ECMWF": 17.9,
+    "BLEND": 24.4
+   }
+  }
+ },
+ "amount": {
+  "L0": [
+   {
+    "n": 34,
+    "actual": 0.86,
+    "lo": 0.0,
+    "hi": 2.73,
+    "err": 36,
+    "dud": 0.21,
+    "maxIn": 0.16
+   },
+   {
+    "n": 34,
+    "actual": 0.76,
+    "lo": 0.12,
+    "hi": 1.67,
+    "err": 40,
+    "dud": 0.06,
+    "maxIn": 0.32
+   },
+   {
+    "n": 34,
+    "actual": 1.02,
+    "lo": 0.16,
+    "hi": 2.75,
+    "err": 37,
+    "dud": 0.0,
+    "maxIn": 0.7
+   },
+   {
+    "n": 36,
+    "actual": 1.08,
+    "lo": 0.27,
+    "hi": 1.54,
+    "err": 25,
+    "dud": 0.0,
+    "maxIn": 99
+   }
+  ],
+  "L1": [
+   {
+    "n": 35,
+    "actual": 0.51,
+    "lo": 0.0,
+    "hi": 2.23,
+    "err": 63,
+    "dud": 0.29,
+    "maxIn": 0.19
+   },
+   {
+    "n": 35,
+    "actual": 0.68,
+    "lo": 0.0,
+    "hi": 2.55,
+    "err": 60,
+    "dud": 0.14,
+    "maxIn": 0.35
+   },
+   {
+    "n": 35,
+    "actual": 0.67,
+    "lo": 0.05,
+    "hi": 1.93,
+    "err": 59,
+    "dud": 0.06,
+    "maxIn": 0.68
+   },
+   {
+    "n": 37,
+    "actual": 1.07,
+    "lo": 0.45,
+    "hi": 1.93,
+    "err": 38,
+    "dud": 0.0,
+    "maxIn": 99
+   }
+  ],
+  "L2": [
+   {
+    "n": 37,
+    "actual": 0.46,
+    "lo": 0.0,
+    "hi": 3.46,
+    "err": 61,
+    "dud": 0.38,
+    "maxIn": 0.17
+   },
+   {
+    "n": 37,
+    "actual": 0.44,
+    "lo": 0.0,
+    "hi": 2.2,
+    "err": 56,
+    "dud": 0.3,
+    "maxIn": 0.31
+   },
+   {
+    "n": 37,
+    "actual": 0.52,
+    "lo": 0.0,
+    "hi": 1.68,
+    "err": 83,
+    "dud": 0.14,
+    "maxIn": 0.6
+   },
+   {
+    "n": 40,
+    "actual": 1.01,
+    "lo": 0.35,
+    "hi": 2.23,
+    "err": 51,
+    "dud": 0.0,
+    "maxIn": 99
+   }
+  ]
+ },
+ "timing": {
+  "L0": {
+   "HRRR": {
+    "medH": 1.0,
+    "within2": 0.7,
+    "wetRight": 0.85,
+    "wetMissed": 0.43
+   },
+   "GFS": {
+    "medH": 2,
+    "within2": 0.63,
+    "wetRight": 0.69,
+    "wetMissed": 0.25
+   },
+   "ECMWF": {
+    "medH": 2.0,
+    "within2": 0.57,
+    "wetRight": 0.63,
+    "wetMissed": 0.12
+   }
+  },
+  "L1": {
+   "HRRR": {
+    "medH": 2,
+    "within2": 0.59,
+    "wetRight": 0.71,
+    "wetMissed": 0.48
+   },
+   "GFS": {
+    "medH": 2.0,
+    "within2": 0.64,
+    "wetRight": 0.67,
+    "wetMissed": 0.3
+   },
+   "ECMWF": {
+    "medH": 2.0,
+    "within2": 0.58,
+    "wetRight": 0.61,
+    "wetMissed": 0.21
+   }
+  }
+ },
+ "trust": {
+  "L0": [
+   {
+    "n": 46,
+    "actual": 1.01,
+    "lo": 0.68,
+    "hi": 1.54,
+    "err": 21,
+    "dud": 0.0,
+    "cvMax": 0.28
+   },
+   {
+    "n": 46,
+    "actual": 0.87,
+    "lo": 0.22,
+    "hi": 1.9,
+    "err": 39,
+    "dud": 0.02,
+    "cvMax": 0.66
+   },
+   {
+    "n": 46,
+    "actual": 0.93,
+    "lo": 0.0,
+    "hi": 2.75,
+    "err": 46,
+    "dud": 0.17,
+    "cvMax": 99
+   }
+  ],
+  "L1": [
+   {
+    "n": 47,
+    "actual": 0.8,
+    "lo": 0.45,
+    "hi": 1.72,
+    "err": 38,
+    "dud": 0.0,
+    "cvMax": 0.33
+   },
+   {
+    "n": 47,
+    "actual": 0.68,
+    "lo": 0.03,
+    "hi": 1.96,
+    "err": 49,
+    "dud": 0.11,
+    "cvMax": 0.61
+   },
+   {
+    "n": 48,
+    "actual": 0.48,
+    "lo": 0.0,
+    "hi": 2.93,
+    "err": 76,
+    "dud": 0.25,
+    "cvMax": 99
+   }
+  ],
+  "L2": [
+   {
+    "n": 50,
+    "actual": 0.88,
+    "lo": 0.25,
+    "hi": 2.02,
+    "err": 50,
+    "dud": 0.06,
+    "cvMax": 0.2
+   },
+   {
+    "n": 50,
+    "actual": 0.64,
+    "lo": 0.0,
+    "hi": 2.84,
+    "err": 64,
+    "dud": 0.18,
+    "cvMax": 0.5
+   },
+   {
+    "n": 51,
+    "actual": 0.29,
+    "lo": 0.0,
+    "hi": 2.18,
+    "err": 63,
+    "dud": 0.35,
+    "cvMax": 99
+   }
+  ]
+ }
+};
+/* ===== end SKILL TABLE ===== */
+
 (function () {
-  const ACC = {
-    stations: ['KNYC', 'KLGA', 'KJFK', 'KEWR', 'KTEB'],  // nearest first
-    refreshMs: 15 * 60 * 1000,    // background refresh cadence
-    windowH: 24,                  // scoring window (hours)
-    minObsHours: 12,              // a station "qualifies" at ≥ this coverage
-    minHours: 10,                 // absolute floor to score at all (fallback + per-model)
-    maxSlideH: 12,                // may end the window up to this many h before the
-                                  // newest report, to land on a better-covered stretch
-  };
   const view = document.getElementById('accView');
-  let last = null;   // {rows, obs:{station, win}, checkedAt, error?}
 
-  const hourKey = d => d.toISOString().slice(0, 13) + ':00';   // UTC hour label
+  const IN = 25.4;
+  const DET_MM = 0.1;    // hourly mean above this counts as raining
+  const GAP_H = 3;       // dry hours tolerated inside one forecast storm
+  const MIN_MM = 2.5;    // storm floor — same rule build_skill.py trained on
+  const CAPE_CONV = 500; // J/kg, convective vs steady
 
-  /* Reads a station's obs into an hourly bucket map {hourKey → {t, v}} of the
-     latest non-null precipitationLastHour per hour. */
-  async function stationBuckets(st) {
-    const r = await fetch(
-      `https://api.weather.gov/stations/${st}/observations?limit=72`,
-      { headers: { accept: 'application/geo+json' } });
-    if (!r.ok) throw new Error('HTTP ' + r.status);
-    const feats = (await r.json()).features || [];
-    const buckets = {};
-    for (const f of feats) {
-      const p = f.properties;
-      const pv = p.precipitationLastHour;
-      if (!pv || pv.value == null) continue;    // null = not reported, skip
-      const t = new Date(p.timestamp);
-      const k = hourKey(new Date(Math.ceil(t.getTime() / 36e5) * 36e5));
-      if (!buckets[k] || t > buckets[k].t) buckets[k] = { t, v: pv.value };
+  const mean = o => { const v = Object.values(o); return v.reduce((a, b) => a + b, 0) / v.length; };
+
+  /* Future hours with each model's precip. HRRR's array ends before the others
+     (its runs are shorter), so models are collected per hour rather than
+     requiring all of them — otherwise the tail of the window would vanish. */
+  function hours(data) {
+    const h = data.main.hourly, out = [];
+    const n = new Date();
+    const h0 = new Date(n.getFullYear(), n.getMonth(), n.getDate(), n.getHours(), 0, 0);
+    for (let i = 0; i < h.time.length; i++) {
+      const ts = new Date(h.time[i]);
+      if (ts.getTime() < h0.getTime()) continue;
+      const core = {};
+      MODELS.forEach(m => {
+        const v = h['precipitation_' + m.id][i];
+        if (v != null) core[m.name] = v;
+      });
+      if (!Object.keys(core).length) continue;
+      const all = Object.assign({}, core);
+      const extra = (data.extraByTime || {})[h.time[i]] || {};
+      for (const k in extra) if (extra[k] != null) all[k] = extra[k];
+      const capes = MODELS.map(m => h['cape_' + m.id][i]).filter(v => v != null);
+      out.push({ ts, core, all, cape: capes.length ? Math.max.apply(null, capes) : 0 });
     }
-    return buckets;
-  }
-
-  /* Best 24-h window for one station: slides the end back up to maxSlideH from
-     the newest report and returns the end + coverage that maximise reported
-     hours (ties → most recent). null if the station reported nothing. */
-  function bestWindow(buckets) {
-    const keys = Object.keys(buckets).sort();
-    if (!keys.length) return null;
-    const newestMs = new Date(keys[keys.length - 1] + ':00Z').getTime();
-    let best = null;
-    for (const key of keys) {
-      const endMs = new Date(key + ':00Z').getTime();
-      if (endMs < newestMs - ACC.maxSlideH * 36e5) continue;   // too far back
-      let have = 0;
-      for (let h = 0; h < ACC.windowH; h++)
-        if (hourKey(new Date(endMs - h * 36e5)) in buckets) have++;
-      if (!best || have > best.have) best = { endMs, have };   // keys ascending → ties keep latest
-    }
-    return best;
-  }
-
-  function buildWin(buckets, endMs) {
-    const win = [];
-    for (let h = ACC.windowH - 1; h >= 0; h--) {
-      const k = hourKey(new Date(endMs - h * 36e5));
-      win.push({ k, v: k in buckets ? buckets[k].v : null });
-    }
-    return win;
-  }
-
-  /* → {station, win:[{k,v}×24], obsHours}. Prefers the NEAREST station that
-     reaches minObsHours (after sliding); if none do, falls back to the single
-     best-covered station provided it clears minHours; else null. */
-  async function fetchObsWindow() {
-    let fallback = null;
-    for (const st of ACC.stations) {
-      try {
-        const buckets = await stationBuckets(st);
-        const bw = bestWindow(buckets);
-        if (!bw) continue;
-        if (!fallback || bw.have > fallback.obsHours)
-          fallback = { station: st, win: buildWin(buckets, bw.endMs), obsHours: bw.have };
-        if (bw.have >= ACC.minObsHours)          // nearest qualifying → take it
-          return { station: st, win: buildWin(buckets, bw.endMs), obsHours: bw.have };
-      } catch (e) { /* station unreachable → try next */ }
-    }
-    return (fallback && fallback.obsHours >= ACC.minHours) ? fallback : null;
-  }
-
-  /* → {HRRR:[...], GFS:[...], ECMWF:[...]} aligned to win's hour keys. */
-  async function fetchPrevRuns(win) {
-    const url = 'https://previous-runs-api.open-meteo.com/v1/forecast' +
-      `?latitude=${COORDS.lat}&longitude=${COORDS.lon}` +
-      `&models=${MODELS.map(m => m.id).join(',')}` +
-      // past_hours must cover a window that may end up to maxSlideH before now
-      // and reach 24 h before that end (≈ now−36 h) → request 48 h to be safe.
-      '&hourly=precipitation_previous_day1' +
-      '&precipitation_unit=mm&timezone=UTC&past_hours=48&forecast_hours=1';
-    const r = await fetch(url);
-    if (!r.ok) throw new Error('previous-runs HTTP ' + r.status);
-    const d = await r.json();
-    const idx = {};
-    d.hourly.time.forEach((t, i) => { idx[t] = i; });
-    const out = {};
-    MODELS.forEach(m => {
-      const arr = d.hourly['precipitation_previous_day1_' + m.id];
-      out[m.name] = win.map(w => idx[w.k] == null ? null : arr[idx[w.k]]);
-    });
     return out;
   }
 
-  /* Sørensen–Dice similarity over the shared scored hours (mask[i] true).
-     minMM sums Σmin(f,o); denom sums Σ(f+o). obsMM/n are for display. */
-  function scoreModel(fc, win, mask) {
-    let minSum = 0, denom = 0, obsSum = 0, n = 0;
-    for (let i = 0; i < win.length; i++) {
-      if (!mask[i]) continue;
-      const f = fc[i], o = win[i].v;
-      minSum += Math.min(f, o); denom += f + o; obsSum += o; n++;
+  /* First stretch of forecast rain worth calling a storm. Same detection rule
+     build_skill.py used to build the `amount` and `trust` tables, so the
+     lookups below are conditioned on exactly this. */
+  function findStorm(hs) {
+    const tot = r => hs.slice(r.a, r.b + 1).reduce((s, x) => s + mean(x.core), 0);
+    let run = null, dry = 0;
+    for (let i = 0; i < hs.length; i++) {
+      if (mean(hs[i].core) > DET_MM) {
+        if (!run) run = { a: i, b: i };
+        run.b = i; dry = 0;
+      } else if (run) {
+        if (++dry > GAP_H) {
+          if (tot(run) >= MIN_MM) return run;
+          run = null; dry = 0;
+        }
+      }
     }
-    if (n < ACC.minHours) return null;
-    // No rain forecast or observed at all in the window → nothing to score.
-    const pct = denom === 0 ? null : Math.round(100 * (2 * minSum) / denom);
-    return { pct, n, obsMM: obsSum };
+    return run && tot(run) >= MIN_MM ? run : null;
   }
 
-  async function refreshAcc() {
-    try {
-      const obs = await fetchObsWindow();
-      if (!obs) throw new Error('no station reported enough of the past 24 h');
-      const prev = await fetchPrevRuns(obs.win);
-      // Common scoring mask: obs present AND every model's forecast present.
-      const mask = obs.win.map((w, i) =>
-        w.v != null && MODELS.every(m => prev[m.name][i] != null));
-      const scoredHours = mask.filter(Boolean).length;
-      const rows = MODELS
-        .map(m => ({ name: m.name, s: scoreModel(prev[m.name], obs.win, mask) }))
-        .sort((a, b) => ((b.s && b.s.pct != null) ? b.s.pct : -1) -
-                        ((a.s && a.s.pct != null) ? a.s.pct : -1));
-      last = { rows, obs, scoredHours, checkedAt: new Date() };
-    } catch (e) {
-      // Keep stale scores (and their honest "Refreshed" time) if we have them.
-      if (!last || !last.rows) last = { error: e.message };
-      console.warn('accuracy refresh:', e);
-    }
-    renderAcc();
+  const band = (list, key, v) => {
+    if (!list) return null;
+    for (const b of list) if (v <= b[key]) return b;
+    return list[list.length - 1];
+  };
+
+  function sliceName(win) {
+    const m = win[0].ts.getMonth() + 1;              // 1-12
+    const season = (m >= 5 && m <= 10) ? 'warm' : 'cool';
+    const cape = Math.max.apply(null, win.map(x => x.cape));
+    return season + '_' + (cape >= CAPE_CONV ? 'convective' : 'stratiform');
   }
+
+  const SLICE_LABEL = {
+    cool_stratiform: 'cool-season steady rain',
+    cool_convective: 'cool-season convective',
+    warm_stratiform: 'warm-season steady rain',
+    warm_convective: 'warm-season showers &amp; storms',
+  };
+
+  const fmtDT = d => d.toLocaleString('en-US', { weekday: 'short', hour: 'numeric', minute: '2-digit' });
+  const mm = v => v >= 10 ? Math.round(v) : Math.round(v * 10) / 10;
+
+  /* ---- the two views ---- */
+
+  function stormView(hs, run) {
+    const win = hs.slice(run.a, run.b + 1);
+    // The window starts at the current hour, so a storm already raining reads
+    // as a negative lead — say so rather than printing "starts in -1 h".
+    const startsIn = Math.round((win[0].ts.getTime() - Date.now()) / 36e5);
+    const whenLbl = startsIn <= 0 ? 'under way now'
+                  : startsIn === 1 ? 'starts within the hour'
+                  : `starts in ${startsIn} h`;
+    const lead = startsIn < 24 ? 'L0' : 'L1';
+    const leadLbl = lead === 'L0' ? 'today' : 'a day or more out';
+
+    // Per-model storm totals. A model absent for ANY hour of the window (HRRR
+    // past its horizon) is reported as no-data rather than a misleading low sum.
+    const totals = {};
+    ENS_ORDER.forEach(name => {
+      if (win.every(x => x.all[name] != null)) {
+        totals[name] = win.reduce((s, x) => s + x.all[name], 0);
+      }
+    });
+    const blendTot = win.reduce((s, x) => s + mean(x.all), 0);
+    const coreTots = MODELS.map(m => totals[m.name]).filter(v => v != null);
+    const avg = coreTots.reduce((a, b) => a + b, 0) / coreTots.length;
+    const cv = avg > 0
+      ? Math.sqrt(coreTots.reduce((s, v) => s + (v - avg) * (v - avg), 0) / coreTots.length) / avg
+      : 0;
+
+    const tr = band((SKILL.trust || {})[lead], 'cvMax', cv);
+    const am = band((SKILL.amount || {})[lead], 'maxIn', blendTot / IN);
+    const slice = sliceName(win);
+    const sk = ((SKILL.slices || {})[slice] || {})[lead] || (SKILL.lead || {})[lead] || {};
+
+    // Trust tone from where this storm's agreement falls among the three bands.
+    const bands = (SKILL.trust || {})[lead] || [];
+    const idx = bands.indexOf(tr);
+    const tone = idx === 0 ? 'good' : idx === 1 ? 'mixed' : 'poor';
+    const headline = idx === 0 ? 'The models agree'
+                   : idx === 1 ? 'The models partly disagree'
+                   : 'The models disagree';
+
+    let trust = '';
+    if (tr) {
+      const fizz = tr.dud >= 0.1
+        ? ` On ${Math.round(tr.dud * 100)}% of storms this unsettled, almost no rain fell.`
+        : tr.dud === 0 ? ' None of them fizzled out.' : '';
+      trust = `<div class="acc-trust ${tone}"><b>${headline}</b><span>` +
+        `Totals typically land within ${tr.err}% — ` +
+        `${tr.lo}–${tr.hi}× the number below.${fizz} ` +
+        `From ${tr.n} past storms forecast with this much ${idx === 0 ? 'agreement' : 'spread'}.` +
+        `</span></div>`;
+    }
+
+    let note = '';
+    if (am && am.actual != null) {
+      const dir = am.actual >= 1.08 ? `usually a little more than forecast (${am.actual}×)`
+                : am.actual <= 0.92 ? `usually a little less than forecast (${am.actual}×)`
+                : 'about what is forecast';
+      note = `<p class="acc-note">Storms forecast this size deliver ${dir}` +
+             (am.dud >= 0.1 ? `, and ${Math.round(am.dud * 100)}% produce almost nothing` : '') +
+             `.</p>`;
+    }
+
+    // Timing comes from HRRR — measurably the best at it — falling back to the
+    // blend if HRRR does not reach this far out.
+    let when = '';
+    const timing = (SKILL.timing || {}).L0 || {};
+    const peakOf = name => {
+      let best = -1, at = null;
+      win.forEach(x => { if (x.all[name] != null && x.all[name] > best) { best = x.all[name]; at = x.ts; } });
+      return best > 0 ? at : null;
+    };
+    const pk = peakOf('HRRR') || peakOf('ECMWF');
+    if (pk) {
+      const src = peakOf('HRRR') ? 'HRRR' : 'ECMWF';
+      const t = timing[src];
+      when = `<b>Heaviest around ${pk.toLocaleTimeString('en-US', { hour: 'numeric' })}</b>` +
+             (t ? ` — ${src} lands that within 2 h ${Math.round(t.within2 * 100)}% of the time` : '');
+    }
+
+    return {
+      title: 'Next storm',
+      body:
+        `<div class="acc-when">Rain <b>${fmtDT(win[0].ts)} – ${fmtDT(win[win.length - 1].ts)}</b>` +
+        ` · ${whenLbl}</div>` +
+        trust +
+        `<div class="acc-best"><i>${mm(blendTot)} mm</i>` +
+        `<em>${(blendTot / IN).toFixed(2)} in<br>blend of ${Object.keys(totals).length} models</em></div>` +
+        note +
+        (when ? `<p class="acc-note">${when}</p>` : '') +
+        `<div class="acc-head">Track record · ${SLICE_LABEL[slice] || slice} · ${leadLbl}</div>` +
+        bars(sk, totals, blendTot, true) +
+        forLine(timing),
+      lead, slice,
+    };
+  }
+
+  function dryView(hs) {
+    // No storm in the window: fall back to how the models do at this time of
+    // year, which is the only honest thing to show and can never fail.
+    const win = hs.length ? hs : [{ ts: new Date(), cape: 0 }];
+    const slice = sliceName(win);
+    const sk = ((SKILL.slices || {})[slice] || {}).L1 || (SKILL.lead || {}).L1 || {};
+    return {
+      title: 'Rain models',
+      body:
+        `<div class="acc-when">No rain forecast in the next 48 h.</div>` +
+        `<div class="acc-head">Track record · ${SLICE_LABEL[slice] || slice} · a day or more out</div>` +
+        bars(sk, {}, null, false) + forLine((SKILL.timing || {}).L0 || {}),
+      lead: 'L1', slice,
+    };
+  }
+
+  /* Ranked bars. Blend first and highlighted: it beat every single model in the
+     backtest, so leading with a model name would point the user at a worse
+     number. A model with no data over the window is shown as such, never 0. */
+  function bars(sk, totals, blendTot, perStorm) {
+    const head = { name: 'Blend', score: sk.BLEND, tot: blendTot, cls: 'blend' };
+    const scored = MODELS.map(m =>
+      ({ name: m.name, score: sk[m.name], tot: totals[m.name], cls: '' }));
+    scored.sort((a, b) => (b.score == null ? -1 : b.score) - (a.score == null ? -1 : a.score));
+    const max = Math.max.apply(null, [head].concat(scored).map(r => r.score || 0).concat([1]));
+    return [head].concat(scored).map(r => {
+      // A model that does not reach this storm (HRRR past its horizon) is shown
+      // as unusable rather than as a track-record bar you cannot act on.
+      const off = r.score == null || (perStorm && r.tot == null);
+      const w = off ? 0 : Math.round(100 * r.score / max);
+      const val = off ? 'no data' : r.score.toFixed(0) + '%';
+      const sub = r.tot != null ? `<u>${mm(r.tot)} mm</u>` : '';
+      return `<div class="acc-row ${r.cls}${off ? ' off' : ''}"><b>${r.name}</b>` +
+        `<div class="acc-bar"><i style="width:${w}%"></i></div>` +
+        `<span>${val}${sub}</span></div>`;
+    }).join('');
+  }
+
+  function forLine(timing) {
+    const h = timing.HRRR, e = timing.ECMWF;
+    if (!h || !e) return '';
+    return `<p class="acc-for"><b>ECMWF</b> is the one to trust on amounts — it misses only ` +
+      `${Math.round(e.wetMissed * 100)}% of wet hours. <b>HRRR</b> is the one to trust on timing ` +
+      `(heaviest hour within 2 h ${Math.round(h.within2 * 100)}% of the time) and rarely cries wolf ` +
+      `(${Math.round(h.wetRight * 100)}% of the hours it calls wet really are) — but it misses ` +
+      `${Math.round(h.wetMissed * 100)}% of wet hours, so never read it as an all-clear.</p>`;
+  }
+
+  /* ---- render ---- */
 
   function renderAcc() {
     const body = document.getElementById('accBody');
     const foot = document.getElementById('accFoot');
-    if (!last || !last.rows) {
-      body.innerHTML = `<div class="acc-status">Couldn't score: ${last ? last.error : '…'}</div>`;
+    const title = document.getElementById('accTitle');
+    if (!SKILL) {                       // table never generated — say so plainly
+      title.textContent = 'Rain models';
+      body.innerHTML = '<div class="acc-status">Skill table missing — run build_skill.py.</div>';
       foot.textContent = '';
       return;
     }
-    body.innerHTML = last.rows.map(r => {
-      const pct = r.s ? r.s.pct : null;
-      return `<div class="acc-row"><b>${r.name}</b>` +
-        `<div class="acc-bar"><i style="width:${pct == null ? 0 : pct}%"></i></div>` +
-        `<span>${pct == null ? '—' : pct + '%'}</span></div>`;
-    }).join('');
-    // Window: hour ENDING at win[0].k spans (win[0].k − 1h) → win[last].k.
-    const fmtDT = d => d.toLocaleString('en-US',
-      {weekday: 'short', hour: 'numeric', minute: '2-digit'});
-    const fmtT  = d => d.toLocaleTimeString('en-US', {hour: 'numeric', minute: '2-digit'});
-    const w = last.obs.win;
-    const start = new Date(new Date(w[0].k + ':00Z').getTime() - 36e5);
-    const end   = new Date(w[w.length - 1].k + ':00Z');
+    if (!lastData) {
+      title.textContent = 'Rain models';
+      body.innerHTML = '<div class="acc-status">Waiting for the forecast…</div>';
+      foot.textContent = '';
+      return;
+    }
+    const hs = hours(lastData);
+    const run = hs.length ? findStorm(hs) : null;
+    const v = run ? stormView(hs, run) : dryView(hs);
+    title.textContent = v.title;
+    body.innerHTML = v.body;
     foot.innerHTML =
-      `Observed rain: ${fmtDT(start)} – ${fmtDT(end)}<br>` +
-      `Station ${last.obs.station} · ${last.scoredHours} h scored · ` +
-      `runs from ~24 h earlier<br>` +
-      `Score = 2·Σmin(f,o) / Σ(f+o) · Refreshed ${fmtT(last.checkedAt)}`;
+      `Scored on ${SKILL.storms} storms, ${SKILL.span}, against the Central Park ` +
+      `hourly gauge (~2 km from 10065 — enough to matter for scattered summer storms).<br>` +
+      `Score = hour-by-hour overlap with the gauge: 100% exact, 0% no overlap at all.<br>` +
+      `HRRR is built for the first 18 h, but the shortest archive available is 0–24 h ` +
+      `averaged, so its short-fuse edge is not measured here.<br>` +
+      `Table built ${SKILL.built}.`;
   }
 
   document.getElementById('infoBtn').addEventListener('click', () => {
     view.classList.add('open');
-    refreshAcc();                        // freshen on open, too
+    renderAcc();
   });
   document.getElementById('accClose').addEventListener('click',
     () => view.classList.remove('open'));
 
-  // Refreshes in the background while the app is open, panel visible or not.
-  refreshAcc();
-  setInterval(refreshAcc, ACC.refreshMs);
-  document.addEventListener('visibilitychange', () => {
-    if (!document.hidden) refreshAcc();
-  });
-
   // Debug hooks for verification.
-  window.__acc = { refreshAcc, fetchObsWindow, fetchPrevRuns, scoreModel,
-                   get last() { return last; } };
+  window.__acc = { renderAcc, hours, findStorm, stormView, dryView, sliceName, band, SKILL };
 })();
 
 /* ===================== Boot ===================== */

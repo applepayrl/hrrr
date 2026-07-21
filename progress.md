@@ -1,5 +1,116 @@
 # progress.md — July 6 session
 
+## 2026-07-21 · Accuracy panel REBUILD (storm-oriented) — IN PROGRESS
+
+Plan: /Users/rlahoud/.claude/plans/when-i-press-the-spicy-seahorse.md (approved).
+Analysis scripts: scratchpad analyze.py … analyze6.py (129 storms, 2 yrs, walk-forward).
+
+### Why
+Round-5's residual failure (line ~12 below) is now the DEFAULT experience: the panel
+almost always says "couldn't score: no station reported enough of the past 24 h",
+because api.weather.gov returns null precipitationLastHour on unreported hours and
+KNYC is a co-op site. Worse, scoring "the last 24 h" can't answer the question the
+user actually asks (which model to trust for an UPCOMING storm, usually checked
+during a dry spell).
+
+### Evidence that drives the design (all out-of-sample, 129 storms)
+- Skill by lead (Dice): ECMWF 43.8/37.1/30.7, GFS 40.9/35.7/26.9, HRRR 36.1/26.0/none;
+  BLEND6 47.0/41.2/36.1 (best everywhere). HRRR has NO data past 48 h.
+- Ranking never flips: ECMWF ≥ GFS > HRRR in 11 of 12 slices.
+- Under-prediction REVERSES with storm size (blend, 0-24h): 0.10-0.18in → 157% of
+  actual; 0.18-0.36 → 104%; 0.36-0.88 → 73%; 0.92-2.62 → 65%. So NO flat multiplier.
+- Model agreement is the one strong per-storm signal: agree → median total err 21%;
+  diverge → 57%.
+- HRRR is precise-but-shy (heaviest-hour median 1 h err, 70% within 2 h; "rain this
+  hour" right 85%; but misses 43% of rain hours). ECMWF sensitive-but-noisy (misses
+  12%, right 63%). → report AMOUNT from ECMWF/blend, TIMING from HRRR.
+- SIX adaptive schemes tested, ALL lost to the plain equal-weight blend: recent form
+  across storms; follow the in-storm leader after 6 h (35% vs 33% chance); rescale
+  rest-of-storm by first-6h error (−1.2..−2.9); skill-weighted blend (−0.3/−0.9);
+  fitted power-law calibration of totals (median err 32%→44%); season/regime
+  conditioning. DESIGN RULE: more arithmetic on the same 3 numbers is a dead end.
+  DO NOT reintroduce these.
+
+### New data sources (verified live 2026-07-21, both CORS *)
+- TRUTH: IEM ASOS mesonet.agron.iastate.edu/cgi-bin/request/asos.py?station=NYC&data=p01i
+  → 8781 hourly rows/yr, ZERO blanks (0.00 explicit on dry hours). Use report_type=3
+  (routine) — omitting it double-counts specials (LGA showed 10.87 in for one day).
+  trace=0.0001 then floor <0.05 mm → 0.
+- FORECAST HISTORY: historical-forecast-api = 0-24 h lead; previous-runs-api
+  _previous_day1 = 24-48 h; _previous_day2 = 48-72 h (GFS/ECMWF only, HRRR all null).
+  Both complete for all 6 models back to ~2024-07 (earlier = ECMWF missing).
+
+### Scope decisions
+- Phase 1 only (panel + build_skill.py). Phases 2-4 (Fly, radar nowcast, ensembles/
+  MRMS) are in the plan but NOT being built now.
+- SKILL table is INLINED into index.html between marker comments (not a separate
+  skill.json) → zero network requests on panel open, works offline, no 404 mode.
+- Script runs on the Mac at build time only. Table is stable (recency doesn't
+  predict) → monthly/seasonal regeneration is plenty.
+- NOT changing the main rain column's 6-model outlier-rejected mean: plain mean-6
+  scored slightly better on 2 yrs, but the existing blend rests on a 2-5 yr backtest.
+
+### CORRECTION found during implementation — "models run dry" was an ARTIFACT
+The planned bias/"lean high" advice came from bucketing storms by what ACTUALLY
+fell. That conditioning is unusable live (you don't know the outcome yet) AND it
+inverts the answer: rebuilt on FORECAST-detected windows — the same detection the
+panel runs at press time — the blend is roughly unbiased (median actual/forecast
+0.86 / 0.76 / 1.02 / 1.08 across forecast-size quartiles). The old table would have
+told the user to triple small forecasts; in reality 21% of small forecast storms
+produce almost nothing. No multiplier is applied anywhere in the panel now.
+Ranking tables still use gauge-detected storms (standard verification); amount +
+trust tables use forecast-detected windows. See build_skill.py forecast_storms().
+
+What the forecast-conditioned trust table actually says (0-24h):
+  agree   (spread<=0.28) n=46  typical miss 21%  actual 0.68-1.54x  fizzled  0%
+  mixed   (spread<=0.66) n=46  typical miss 39%  actual 0.22-1.90x  fizzled  2%
+  diverge               n=46  typical miss 46%  actual 0.00-2.75x  fizzled 17%
+
+### Files
+- build_skill.py (new): fetches + caches to .skill-cache/ (gitignored), detects
+  storms, scores, rewrites the `const SKILL` block in index.html between markers.
+  `--print` shows tables without touching the file. Idempotent (verified).
+- index.html: MAIN_URL gained `cape`; panel HTML shell simplified (h2#accTitle +
+  #accBody + #accFoot); new .acc-when/.acc-trust/.acc-best/.acc-note/.acc-head/
+  .acc-for CSS; SKILL block (~4.9 KB) + rewritten panel IIFE.
+
+### Verified 2026-07-21 (local server, 375x812 mobile viewport)
+20/20 injected-lastData assertions PASS, plus:
+- A1 numbers match the standalone analysis exactly; rerun is byte-identical.
+- A2 bone-dry 48 h → "No rain forecast in the next 48 h." + seasonal ranking,
+  never an error. THIS WAS THE ORIGINAL BUG.
+- A3 lead bucket flips exactly where startsIn crosses 24 h (swept 20-30 h).
+  NOTE: window is anchored to the top of the current hour, so slot i is slightly
+  under i hours away — slot 24 is correctly L0.
+- A3b HRRR past its horizon → "no data", never a false 0 (was showing a bar).
+- A4 slice + trust-band lookups match hand recomputation (agree cv=0.00 → 21%/n=46;
+  diverge cv=1.14 → 46%/n=46).
+- A5 live storm: HRRR 3.6 / GFS 7.9 / ECMWF 17.9 mm from the raw API == displayed;
+  blend6 14.27 → "14 mm"; HRRR peak hour 21 == "Heaviest around 9 PM".
+- A5b headline is the RAW blend at all three sizes; note follows the forecast-size
+  bucket. No displayed number is ever multiplied.
+- A7 zero console errors; cycleModel, long-press hook, __abortSwipe, radar
+  open/close, satellite, 6-model ensemble cells all intact.
+- A8 opening + re-rendering the panel issues ZERO network requests.
+- A8b renders fully with fetch stubbed to reject (works offline).
+- Fixed during testing: "starts in -1 h" → "under way now" for a storm already
+  in progress.
+- A8c (live Pages + phone) — pending push.
+
+### Deviations from the approved plan
+- L2 (48-72 h) is unreachable from the panel: the app fetches only 48 forecast
+  hours, so a detected storm is always L0 or L1. The L2 columns are still built
+  (free, and ready if the window is ever widened) but the panel never reads them.
+- A6 (scoring-formula parity between index.html and build_skill.py) is moot: the
+  panel no longer scores anything at runtime, it reads the table. A1 covers it.
+
+### Status
+- [x] 1 build_skill.py
+- [x] 2 inline SKILL block + marker comments
+- [x] 3 rewrite panel IIFE, add cape to MAIN_URL
+- [x] 4 verify A1-A8b
+- [ ] 5 commit + push + MANUAL Pages build + A8c on the phone
+
 ## ROUND 5 (fifth user message) — accuracy panel "no station reported enough" error
 Diagnosis (live): required ≥20/24 hrs from one station anchored at its newest report; measured coverage KNYC 17/24, KJFK 14/24, KLGA 5/24, KEWR 4/24, KTEB 0/24 → none qualify → error. Causes: (1) threshold 20 > reality (best 17); (2) Central Park null-on-dry-hours; (3) high-freq stations (LGA/EWR) blow the 72-obs limit in ~5h; (4) TEB never reports precip. Sliding the window back 6h lifts KNYC to 20/24.
 User chose: A+B (lower bar + slide + pick best-covered station), NOT composite/farther/coarser.
